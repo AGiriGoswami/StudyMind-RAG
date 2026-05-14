@@ -85,13 +85,13 @@ def query_rag(question, index, chunks, top_k=3):
     Question: {question}
     """
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-2.0-flash')
         response = model.generate_content(prompt)
         return response.text
     except ResourceExhausted:
         import streamlit as st
-        st.warning("`gemini-1.5-flash` quota exceeded. Falling back to `gemini-1.5-flash` which has a higher free tier limit.")
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        st.warning("`gemini-2.0-flash` quota exceeded. Falling back to `gemini-2.0-flash-lite` which has high rate limits.")
+        model = genai.GenerativeModel('gemini-2.0-flash-lite')
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
