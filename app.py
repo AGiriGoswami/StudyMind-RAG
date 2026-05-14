@@ -85,15 +85,11 @@ def query_rag(question, index, chunks, top_k=3):
     Question: {question}
     """
     try:
-        model = genai.GenerativeModel('gemini-2.0-flash')
+        model = genai.GenerativeModel('gemini-2.5-flash')
         response = model.generate_content(prompt)
         return response.text
-    except ResourceExhausted:
-        import streamlit as st
-        st.warning("`gemini-2.0-flash` quota exceeded. Falling back to `gemini-2.0-flash-lite` which has high rate limits.")
-        model = genai.GenerativeModel('gemini-2.0-flash-lite')
-        response = model.generate_content(prompt)
-        return response.text
+    except ResourceExhausted as e:
+        return f"⚠️ **Rate Limit Exceeded:** You have exhausted your daily free tier API quota (20 requests/day) for this model. Please wait until tomorrow, use a different API key, or upgrade your Google AI Studio plan to paid. \n\n*Error detail: {e.message}*"
     except Exception as e:
         return f"An error occurred: {str(e)}"
 
