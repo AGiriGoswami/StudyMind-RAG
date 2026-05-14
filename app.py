@@ -1,5 +1,8 @@
 import streamlit as st
 
+
+api_key = st.secrets["GOOGLE_API_KEY"]
+
 st.title("📚 StudyMind")
 
 uploaded_file = st.file_uploader("Upload PDF")
