@@ -4,6 +4,7 @@ import fitz  # PyMuPDF
 import faiss
 import numpy as np
 import google.generativeai as genai
+from google.api_core.exceptions import ResourceExhausted
 from dotenv import load_dotenv
 
 # Load environment variables for local development
@@ -83,9 +84,18 @@ def query_rag(question, index, chunks, top_k=3):
     
     Question: {question}
     """
-    model = genai.GenerativeModel('gemini-2.5-flash')
-    response = model.generate_content(prompt)
-    return response.text
+    try:
+        model = genai.GenerativeModel('gemini-2.5-flash')
+        response = model.generate_content(prompt)
+        return response.text
+    except ResourceExhausted:
+        import streamlit as st
+        st.warning("`gemini-2.5-flash` quota exceeded. Falling back to `gemini-1.5-flash` which has a higher free tier limit.")
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        return f"An error occurred: {str(e)}"
 
 # --- UI ---
 st.set_page_config(page_title="StudyMind", page_icon="📚", layout="centered")
