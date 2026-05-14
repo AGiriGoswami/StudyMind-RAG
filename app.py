@@ -6,6 +6,7 @@ import numpy as np
 import google.generativeai as genai
 from google.api_core.exceptions import ResourceExhausted
 from dotenv import load_dotenv
+from groq import Groq
 
 # Load environment variables for local development
 load_dotenv()
@@ -14,14 +15,21 @@ load_dotenv()
 # Support both .env (local) and Streamlit secrets (cloud)
 try:
     API_KEY = os.getenv("GOOGLE_API_KEY") or st.secrets.get("GOOGLE_API_KEY")
+    GROQ_API_KEY = os.getenv("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY")
 except FileNotFoundError:
     API_KEY = os.getenv("GOOGLE_API_KEY")
+    GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 if not API_KEY:
     st.error("Google API Key is missing. Please set it in .env or Streamlit Secrets.")
     st.stop()
 
+if not GROQ_API_KEY:
+    st.error("Groq API Key is missing. Please set it in .env or Streamlit Secrets. You can get one for free at https://console.groq.com/")
+    st.stop()
+
 genai.configure(api_key=API_KEY)
+groq_client = Groq(api_key=GROQ_API_KEY)
 
 # Initialize session state for the vector store
 if "faiss_index" not in st.session_state:
@@ -74,24 +82,24 @@ def query_rag(question, index, chunks, top_k=3):
     relevant_chunks = [chunks[i] for i in indices[0] if i < len(chunks)]
     context = "\n\n".join(relevant_chunks)
     
-    # Generate answer using Gemini
-    prompt = f"""
-    You are a helpful academic assistant. Answer the user's question based ONLY on the following context.
-    If the answer is not in the context, say "I cannot answer this based on the provided document."
-    
-    Context:
-    {context}
-    
-    Question: {question}
-    """
+    # Generate answer using Groq (Llama 3.1)
     try:
-        model = genai.GenerativeModel('gemini-2.5-flash')
-        response = model.generate_content(prompt)
-        return response.text
-    except ResourceExhausted as e:
-        return f"⚠️ **Rate Limit Exceeded:** You have exhausted your daily free tier API quota (20 requests/day) for this model. Please wait until tomorrow, use a different API key, or upgrade your Google AI Studio plan to paid. \n\n*Error detail: {e.message}*"
+        chat_completion = groq_client.chat.completions.create(
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a helpful academic assistant."
+                },
+                {
+                    "role": "user",
+                    "content": f"Answer the user's question based ONLY on the following context.\nIf the answer is not in the context, say 'I cannot answer this based on the provided document.'\n\nContext:\n{context}\n\nQuestion: {question}"
+                }
+            ],
+            model="llama-3.1-8b-instant",
+        )
+        return chat_completion.choices[0].message.content
     except Exception as e:
-        return f"An error occurred: {str(e)}"
+        return f"An error occurred with Groq: {str(e)}"
 
 # --- UI ---
 st.set_page_config(page_title="StudyMind", page_icon="📚", layout="centered")
