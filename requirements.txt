@@ -1,7 +1,7 @@
 streamlit
 google-generativeai
 faiss-cpu
-PyMuPDF
+pypdf
 numpy
 python-dotenv
 groq

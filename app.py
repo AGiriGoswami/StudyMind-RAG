@@ -1,6 +1,6 @@
 import streamlit as st
 import os
-import fitz  # PyMuPDF
+import pypdf
 import faiss
 import numpy as np
 import google.generativeai as genai
@@ -45,10 +45,12 @@ if "text_chunks" not in st.session_state:
 
 # --- Helper Functions ---
 def extract_text_from_pdf(uploaded_file):
-    doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
+    pdf_reader = pypdf.PdfReader(uploaded_file)
     text = ""
-    for page in doc:
-        text += page.get_text("text") + "\n"
+    for page in pdf_reader.pages:
+        page_text = page.extract_text()
+        if page_text:
+            text += page_text + "\n"
     return text
 
 def text_to_speech(text):
