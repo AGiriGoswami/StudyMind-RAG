@@ -208,23 +208,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-CHAT_FILE = "chat_history.json"
-
-def load_chat():
-    if os.path.exists(CHAT_FILE):
-        try:
-            with open(CHAT_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return []
-    return []
-
-def save_chat(messages):
-    with open(CHAT_FILE, "w", encoding="utf-8") as f:
-        json.dump(messages, f, ensure_ascii=False, indent=2)
-
 if "messages" not in st.session_state:
-    st.session_state.messages = load_chat()
+    st.session_state.messages = []
 
 # Sidebar for Setup and Configuration
 with st.sidebar:
@@ -312,7 +297,6 @@ else:
     if prompt := st.chat_input("Ask a question about your documents..."):
         # Add user message to chat history
         st.session_state.messages.append({"role": "user", "content": prompt})
-        save_chat(st.session_state.messages)
         
         # Display user message in chat message container
         with st.chat_message("user"):
@@ -363,4 +347,3 @@ else:
                 "mermaid": mermaid_blocks,
                 "usage": usage_dict
             })
-            save_chat(st.session_state.messages)
