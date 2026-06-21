@@ -1,18 +1,6 @@
 [
   {
     "role": "user",
-    "content": "all the details "
-  },
-  {
-    "role": "assistant",
-    "content": "**Short Answer:** \nAjay Giri Goswami is a Full Stack Developer with hands-on experience in MERN stack, skilled in REST API development, API integration, JWT-based authentication, and responsive UI design. He has worked on e-commerce operations, performance analytics, and SEO optimization.\n\n**Long Answer:** \nAjay Giri Goswami is a Full Stack Developer with a strong background in MERN stack (MongoDB, Express.js, React.js, and Node.js). He has hands-on experience in building scalable web applications using these technologies. His skill set includes REST API development, API integration, JWT-based authentication, and responsive UI design. He has also worked on e-commerce operations, performance analytics, and SEO optimization. Currently, he is working as an E-Commerce Account Manager at Aquadpure, where he has managed over 150 product listings across Amazon and Flipkart, improved product visibility and keyword ranking through SEO optimization, and streamlined inventory tracking and order processing workflows.\n\nAjay has also built several projects, including a Profit & RTO Simulation Calculator and a Multi-Platform Stock Management System (MERN Stack). His projects showcase his skills in building scalable backends, integrating APIs, and designing interactive dashboards using Chart.js. He is proficient in various tools such as Git, GitHub, npm, Axios, and Excel, and has a good understanding of database management systems like MongoDB, Mongoose, and MySQL.\n\nAjay holds a Bachelor of Computer Application (BCA) degree from Vishisht School of Management and is currently pursuing a Master of Computer Application (MCA) degree from Sage University.\n\n**Flowchart:**\n",
-    "mermaid": [
-      "graph TD\n    A[\"Full Stack Developer\"] -->|\"Hands-on experience in MERN stack\"| B[\"MongoDB\"]\n    B -->|\"Database management system\"| C[\"MongoDB\"]\n    C -->|\"Data modeling using Mongoose\"| D[\"Mongoose\"]\n\n    B -->|\"Data retrieval and manipulation\"| E[\"Express.js\"]\n    E -->|\"Web framework for Node.js\"| F[\"Node.js\"]\n    F -->|\"Server-side programming language\"| G[\"JavaScript (ES6+)\"]\n\n    B -->|\"Frontend framework for building user interfaces\"| H[\"React.js\"]\n    H -->|\"State management using Redux Toolkit\"| I[\"Redux Toolkit\"]\n    H -->|\"UI library for styling and layout management\"| J[\"Tailwind CSS\"]\n\n    B -->|\"Authentication and authorization using JSON Web Tokens\"| K[\"JWT Authentication\"]\n\n    B -->|\"API integration and data exchange\"| L[\"REST API Development\"]\n    L -->|\"API client for sending HTTP requests\"| M[\"Axios\"]\n\n    A -->|\"Technical skills and expertise\"| N[\"Full-stack web development\"]\n\n    A -->|\"Educational background and certifications\"| O[\"Bachelor of Computer Application (BCA) and Master of Computer Application (MCA)\"]\n\n    A -->|\"Professional experience and work history\"| P[\"E-Commerce Account Manager at Aquadpure\"]"
-    ],
-    "usage": {
-      "prompt_tokens": 1934,
-      "completion_tokens": 603,
-      "total_tokens": 2537
-    }
+    "content": "skills"
   }
 ]
