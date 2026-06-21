@@ -3,7 +3,8 @@ import os
 import pypdf
 import faiss
 import numpy as np
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from streamlit_local_storage import LocalStorage
 from google.api_core.exceptions import ResourceExhausted
 from dotenv import load_dotenv
@@ -35,7 +36,7 @@ if not GROQ_API_KEY:
     st.error("Groq API Key is missing. Please set it in .env or Streamlit Secrets. You can get one for free at https://console.groq.com/")
     st.stop()
 
-genai.configure(api_key=API_KEY)
+gemini_client = genai.Client(api_key=API_KEY)
 groq_client = Groq(api_key=GROQ_API_KEY)
 
 # Initialize session state for the vector store
@@ -130,14 +131,14 @@ def chunk_text(text, chunk_size=500, overlap=50):
         chunks.append(" ".join(words[i:i + chunk_size]))
     return chunks
 
-def get_gemini_embeddings(text_list, task_type="retrieval_document"):
+def get_gemini_embeddings(text_list, task_type="RETRIEVAL_DOCUMENT"):
     # Gemini returns a list of embeddings (one for each chunk)
-    result = genai.embed_content(
-        model="models/gemini-embedding-2",
-        content=text_list,
-        task_type=task_type
+    result = gemini_client.models.embed_content(
+        model="text-embedding-004",
+        contents=text_list,
+        config=types.EmbedContentConfig(task_type=task_type)
     )
-    return result['embedding']
+    return [e.values for e in result.embeddings]
 
 def create_vector_store(chunks):
     # Get embeddings from Gemini API
