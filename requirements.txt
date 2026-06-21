@@ -6,3 +6,4 @@ numpy
 python-dotenv
 groq
 gTTS
+streamlit-local-storage

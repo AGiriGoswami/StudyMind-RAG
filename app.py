@@ -4,6 +4,7 @@ import pypdf
 import faiss
 import numpy as np
 import google.generativeai as genai
+from streamlit_local_storage import LocalStorage
 from google.api_core.exceptions import ResourceExhausted
 from dotenv import load_dotenv
 from groq import Groq
@@ -208,8 +209,18 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+localS = LocalStorage()
+
 if "messages" not in st.session_state:
     st.session_state.messages = []
+    # Attempt to load from local storage
+    # We must do this carefully because getItem returns the value later in the component lifecycle
+    stored_chats = localS.getItem("chat_history")
+    if stored_chats and isinstance(stored_chats, str):
+        try:
+            st.session_state.messages = json.loads(stored_chats)
+        except Exception:
+            pass
 
 # Sidebar for Setup and Configuration
 with st.sidebar:
@@ -257,6 +268,7 @@ with st.sidebar:
         st.divider()
         if st.button("🗑️ Clear Chat History", use_container_width=True):
             st.session_state.messages = []
+            localS.setItem("chat_history", "[]")
             st.rerun()
 
 # Main Chat Interface
@@ -296,6 +308,7 @@ else:
     if prompt := st.chat_input("Ask a question about your documents..."):
         # Add user message to chat history
         st.session_state.messages.append({"role": "user", "content": prompt})
+        localS.setItem("chat_history", json.dumps(st.session_state.messages))
         
         # Display user message in chat message container
         with st.chat_message("user"):
@@ -346,3 +359,4 @@ else:
                 "mermaid": mermaid_blocks,
                 "usage": usage_dict
             })
+            localS.setItem("chat_history", json.dumps(st.session_state.messages))
