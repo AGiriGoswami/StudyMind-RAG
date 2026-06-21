@@ -274,7 +274,7 @@ with st.sidebar:
         st.divider()
         if st.button("🗑️ Clear Chat History", use_container_width=True):
             st.session_state.messages = []
-            localS.setItem("chat_history", "[]")
+            localS.setItem("chat_history", "[]", key="clear_chat_history")
             st.rerun()
 
 # Main Chat Interface
@@ -314,7 +314,7 @@ else:
     if prompt := st.chat_input("Ask a question about your documents..."):
         # Add user message to chat history
         st.session_state.messages.append({"role": "user", "content": prompt})
-        localS.setItem("chat_history", json.dumps(st.session_state.messages))
+        localS.setItem("chat_history", json.dumps(st.session_state.messages), key="set_chat_history_user")
         
         # Display user message in chat message container
         with st.chat_message("user"):
@@ -365,4 +365,4 @@ else:
                 "mermaid": mermaid_blocks,
                 "usage": usage_dict
             })
-            localS.setItem("chat_history", json.dumps(st.session_state.messages))
+            localS.setItem("chat_history", json.dumps(st.session_state.messages), key="set_chat_history_assistant")
