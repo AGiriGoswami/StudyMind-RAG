@@ -132,12 +132,18 @@ def chunk_text(text, chunk_size=500, overlap=50):
 
 def get_gemini_embeddings(text_list, task_type="RETRIEVAL_DOCUMENT"):
     # Gemini returns a list of embeddings (one for each chunk)
-    result = gemini_client.models.embed_content(
-        model="text-embedding-004",
-        contents=text_list,
-        config=types.EmbedContentConfig(task_type=task_type)
-    )
-    return [e.values for e in result.embeddings]
+    # The batch limit for gemini-embedding-001 is 100 requests per batch.
+    all_embeddings = []
+    batch_size = 100
+    for i in range(0, len(text_list), batch_size):
+        batch = text_list[i:i + batch_size]
+        result = gemini_client.models.embed_content(
+            model="gemini-embedding-001",
+            contents=batch,
+            config=types.EmbedContentConfig(task_type=task_type.upper())
+        )
+        all_embeddings.extend([e.values for e in result.embeddings])
+    return all_embeddings
 
 def create_vector_store(chunks):
     # Get embeddings from Gemini API

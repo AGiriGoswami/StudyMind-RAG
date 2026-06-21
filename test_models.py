@@ -1,17 +1,11 @@
-import google.generativeai as genai
 import os
+from google import genai
 from dotenv import load_dotenv
 
 load_dotenv()
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+API_KEY = os.getenv("GOOGLE_API_KEY")
+gemini_client = genai.Client(api_key=API_KEY)
 
-models_to_test = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-flash-latest']
-
-for model_name in models_to_test:
-    try:
-        print(f"Testing {model_name}...")
-        model = genai.GenerativeModel(model_name)
-        response = model.generate_content("Hello, this is a test.")
-        print(f"Success for {model_name}: {response.text[:20]}...")
-    except Exception as e:
-        print(f"Error for {model_name}: {type(e).__name__} - {e}")
+for m in gemini_client.models.list():
+    if "embed" in m.name.lower() or "embed" in str(m.supported_actions).lower():
+        print(f"Model: {m.name}, Actions: {m.supported_actions}")
