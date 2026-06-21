@@ -165,7 +165,7 @@ def query_rag(question, index, chunks, inc_short=True, inc_long=True, inc_flow=T
     if inc_long:
         sys_prompt += "2. Long Answer: A detailed, extremely simple explanation as if to a beginner.\n"
     if inc_flow:
-        sys_prompt += "3. Flowchart: You MUST output a complete Mermaid.js flowchart (graph TD) representing the ENTIRE topic. You MUST write the raw mermaid code inside a markdown block exactly like this: ```mermaid\n[your code here]\n```. CRITICAL: You MUST wrap all node text and edge labels in DOUBLE QUOTES to prevent syntax errors. Example: A[\"React.js (Frontend)\"] -->|\"Uses\"| B[\"Node.js\"]\n"
+        sys_prompt += "3. Flowchart: You MUST output a complete Mermaid.js flowchart (graph TD) representing the ENTIRE topic. You MUST write the raw mermaid code inside a markdown block exactly like this: ```mermaid\n[your code here]\n```. CRITICAL MERMAID SYNTAX RULES: 1. You MUST NOT use parentheses (), brackets [], braces {}, or quotes inside node text. 2. DO NOT use special characters in node IDs, only simple letters and numbers (e.g. A1, B2). 3. Avoid long text in nodes. Example: A1[React JS Frontend] -->|Uses| B1[Node JS Backend]\n"
         
     # Generate answer using Groq (Llama 3.1)
     try:
@@ -300,11 +300,13 @@ else:
                 
                 # Only render audio for the last assistant message to save UI performance
                 if i == len(st.session_state.messages) - 1:
-                    try:
-                        audio_fp = text_to_speech(msg["content"])
-                        st.audio(audio_fp, format='audio/mp3')
-                    except Exception as e:
-                        st.error(f"Audio generation failed: {e}")
+                    text_content = msg.get("content", "")
+                    if text_content.strip():
+                        try:
+                            audio_fp = text_to_speech(text_content)
+                            st.audio(audio_fp, format='audio/mp3')
+                        except Exception as e:
+                            st.error(f"Audio generation failed: {e}")
 
     # Chat input
     if prompt := st.chat_input("Ask a question about your documents..."):
@@ -345,12 +347,13 @@ else:
                 if usage:
                     st.caption(f"⚡ **Token Usage:** {usage.prompt_tokens} input + {usage.completion_tokens} output = **{usage.total_tokens} total tokens**")
                 
-                # Try TTS
-                try:
-                    audio_fp = text_to_speech(text_part)
-                    st.audio(audio_fp, format='audio/mp3')
-                except Exception as e:
-                    st.error(f"Audio generation failed: {e}")
+                # Try TTS only if there is text
+                if text_part.strip():
+                    try:
+                        audio_fp = text_to_speech(text_part)
+                        st.audio(audio_fp, format='audio/mp3')
+                    except Exception as e:
+                        st.error(f"Audio generation failed: {e}")
                 
             # Add assistant response to chat history
             usage_dict = {"prompt_tokens": usage.prompt_tokens, "completion_tokens": usage.completion_tokens, "total_tokens": usage.total_tokens} if usage else None
