@@ -257,7 +257,6 @@ with st.sidebar:
         st.divider()
         if st.button("🗑️ Clear Chat History", use_container_width=True):
             st.session_state.messages = []
-            save_chat([])
             st.rerun()
 
 # Main Chat Interface
