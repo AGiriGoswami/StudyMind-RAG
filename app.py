@@ -6,7 +6,6 @@ import numpy as np
 from google import genai
 from google.genai import types
 from streamlit_local_storage import LocalStorage
-from google.api_core.exceptions import ResourceExhausted
 from dotenv import load_dotenv
 from groq import Groq
 import io
