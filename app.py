@@ -10,8 +10,8 @@ from groq import Groq
 import io
 import re
 import time
+import json
 import streamlit.components.v1 as components
-from fpdf import FPDF
 from gtts import gTTS
 
 # Load environment variables for local development
@@ -56,17 +56,6 @@ def text_to_speech(text):
     fp = io.BytesIO()
     tts.write_to_fp(fp)
     return fp
-
-def create_pdf(text):
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("Helvetica", size=12)
-    safe_text = text.encode('latin-1', 'replace').decode('latin-1')
-    pdf.multi_cell(0, 10, safe_text)
-    out = pdf.output()
-    if isinstance(out, str):
-        return out.encode('latin-1', 'replace')
-    return bytes(out)
 
 def render_mermaid(code: str):
     components.html(
@@ -217,83 +206,154 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📚 StudyMind - RAG Academic Assistant")
+CHAT_FILE = "chat_history.json"
 
-st.markdown("Upload PDF documents or paste raw text below, then process them to ask questions.")
+def load_chat():
+    if os.path.exists(CHAT_FILE):
+        try:
+            with open(CHAT_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
 
-uploaded_files = st.file_uploader("Upload PDFs (optional)", type="pdf", accept_multiple_files=True)
-pasted_text = st.text_area("Or paste your text here (optional)", height=200)
+def save_chat(messages):
+    with open(CHAT_FILE, "w", encoding="utf-8") as f:
+        json.dump(messages, f, ensure_ascii=False, indent=2)
 
-if pasted_text:
-    word_count = len(pasted_text.split())
-    char_count = len(pasted_text)
-    st.caption(f"📝 **Text stats:** {word_count} words | {char_count} characters")
+if "messages" not in st.session_state:
+    st.session_state.messages = load_chat()
 
-if uploaded_files or pasted_text.strip():
-    if st.button("Process Data"):
-        with st.spinner("Extracting text and generating embeddings via Gemini..."):
-            all_text = ""
-            if uploaded_files:
-                for uploaded_file in uploaded_files:
-                    all_text += extract_text_from_pdf(uploaded_file) + "\n"
-            
-            if pasted_text.strip():
-                all_text += pasted_text + "\n"
-            
-            if not all_text.strip():
-                st.error("No extractable text found in the inputs.")
-            else:
-                chunks = chunk_text(all_text)
-                index = create_vector_store(chunks)
+# Sidebar for Setup and Configuration
+with st.sidebar:
+    st.title("📚 StudyMind Setup")
+    st.markdown("Upload PDF documents or paste raw text below to build the knowledge base.")
+
+    uploaded_files = st.file_uploader("Upload PDFs (optional)", type="pdf", accept_multiple_files=True)
+    pasted_text = st.text_area("Or paste your text here (optional)", height=200)
+
+    if pasted_text:
+        word_count = len(pasted_text.split())
+        char_count = len(pasted_text)
+        st.caption(f"📝 **Text stats:** {word_count} words | {char_count} characters")
+
+    if uploaded_files or pasted_text.strip():
+        if st.button("Process Data"):
+            with st.spinner("Extracting text and generating embeddings via Gemini..."):
+                all_text = ""
+                if uploaded_files:
+                    for uploaded_file in uploaded_files:
+                        all_text += extract_text_from_pdf(uploaded_file) + "\n"
                 
-                st.session_state.faiss_index = index
-                st.session_state.text_chunks = chunks
-                st.success("Data processed successfully! You can now ask questions.")
+                if pasted_text.strip():
+                    all_text += pasted_text + "\n"
+                
+                if not all_text.strip():
+                    st.error("No extractable text found in the inputs.")
+                else:
+                    chunks = chunk_text(all_text)
+                    index = create_vector_store(chunks)
+                    
+                    st.session_state.faiss_index = index
+                    st.session_state.text_chunks = chunks
+                    st.success("Data processed successfully! You can now ask questions.")
 
-if st.session_state.faiss_index is not None:
-    st.divider()
-    st.subheader("⚙️ Output Preferences")
-    col_a, col_b, col_c = st.columns(3)
-    with col_a:
-        inc_short = st.checkbox("Show Short Answer", value=True)
-    with col_b:
-        inc_long = st.checkbox("Show Long Answer", value=True)
-    with col_c:
-        inc_flow = st.checkbox("Show Flowchart", value=True)
+    if st.session_state.faiss_index is not None:
+        st.divider()
+        st.subheader("⚙️ Output Preferences")
+        st.session_state.inc_short = st.checkbox("Show Short Answer", value=st.session_state.get("inc_short", True))
+        st.session_state.inc_long = st.checkbox("Show Long Answer", value=st.session_state.get("inc_long", True))
+        st.session_state.inc_flow = st.checkbox("Show Flowchart", value=st.session_state.get("inc_flow", True))
+        
+        st.divider()
+        if st.button("🗑️ Clear Chat History", use_container_width=True):
+            st.session_state.messages = []
+            save_chat([])
+            st.rerun()
 
-    st.subheader("Ask a Question")
-    question = st.text_input("Enter your question based on the document:")
-    
-    if st.button("Generate Answer"):
-        if question.strip():
+# Main Chat Interface
+st.title("💬 StudyMind Chat")
+
+if st.session_state.faiss_index is None:
+    st.info("👈 Please process some documents in the sidebar first to begin chatting!")
+else:
+    # Display chat messages from history on app rerun
+    for i, msg in enumerate(st.session_state.messages):
+        with st.chat_message(msg["role"]):
+            if msg["role"] == "user":
+                st.markdown(msg["content"])
+            else:
+                st.markdown(msg["content"])
+                if "mermaid" in msg:
+                    for code in msg["mermaid"]:
+                        render_mermaid(code)
+                if "usage" in msg and msg["usage"]:
+                    u = msg["usage"]
+                    p_tok = u.get("prompt_tokens", 0) if isinstance(u, dict) else u.prompt_tokens
+                    c_tok = u.get("completion_tokens", 0) if isinstance(u, dict) else u.completion_tokens
+                    t_tok = u.get("total_tokens", 0) if isinstance(u, dict) else u.total_tokens
+                    st.caption(f"⚡ **Token Usage:** {p_tok} input + {c_tok} output = **{t_tok} total tokens**")
+                
+                # Only render audio for the last assistant message to save UI performance
+                if i == len(st.session_state.messages) - 1:
+                    try:
+                        audio_fp = text_to_speech(msg["content"])
+                        st.audio(audio_fp, format='audio/mp3')
+                    except Exception as e:
+                        st.error(f"Audio generation failed: {e}")
+
+    # Chat input
+    if prompt := st.chat_input("Ask a question about your documents..."):
+        # Add user message to chat history
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        save_chat(st.session_state.messages)
+        
+        # Display user message in chat message container
+        with st.chat_message("user"):
+            st.markdown(prompt)
+            
+        # Display assistant response in chat message container
+        with st.chat_message("assistant"):
             with st.spinner("Analyzing document and generating answer..."):
-                answer, usage = query_rag(question, st.session_state.faiss_index, st.session_state.text_chunks, inc_short, inc_long, inc_flow)
+                inc_short = st.session_state.get("inc_short", True)
+                inc_long = st.session_state.get("inc_long", True)
+                inc_flow = st.session_state.get("inc_flow", True)
+                
+                raw_answer, usage = query_rag(
+                    prompt, 
+                    st.session_state.faiss_index, 
+                    st.session_state.text_chunks, 
+                    inc_short, 
+                    inc_long, 
+                    inc_flow
+                )
+                
+                mermaid_blocks = re.findall(r'```mermaid\n(.*?)\n```', raw_answer, re.DOTALL)
+                text_part = re.sub(r'```mermaid\n.*?\n```', '', raw_answer, flags=re.DOTALL)
+                
+                # Stream the text portion
+                st.write_stream(stream_text(text_part))
+                
+                # Render Flowcharts
+                for code in mermaid_blocks:
+                    render_mermaid(code)
                 
                 if usage:
                     st.caption(f"⚡ **Token Usage:** {usage.prompt_tokens} input + {usage.completion_tokens} output = **{usage.total_tokens} total tokens**")
                 
-                
-                mermaid_blocks = re.findall(r'```mermaid\n(.*?)\n```', answer, re.DOTALL)
-                text_part = re.sub(r'```mermaid\n.*?\n```', '', answer, flags=re.DOTALL)
-                
-                with st.chat_message("assistant"):
-                    st.write_stream(stream_text(text_part))
-                
-                for code in mermaid_blocks:
-                    render_mermaid(code)
-                
+                # Try TTS
                 try:
                     audio_fp = text_to_speech(text_part)
                     st.audio(audio_fp, format='audio/mp3')
                 except Exception as e:
                     st.error(f"Audio generation failed: {e}")
-                    
-                st.divider()
-                st.write("📥 **Download Answer**")
                 
-                full_text_to_download = text_part + "\n\nFlowchart Code (Mermaid):\n" + "\n".join(mermaid_blocks)
-                
-                pdf_bytes = create_pdf(full_text_to_download)
-                st.download_button("Download PDF", data=pdf_bytes, file_name="answer.pdf", mime="application/pdf")
-        else:
-            st.warning("Please enter a question.")
+            # Add assistant response to chat history
+            usage_dict = {"prompt_tokens": usage.prompt_tokens, "completion_tokens": usage.completion_tokens, "total_tokens": usage.total_tokens} if usage else None
+            st.session_state.messages.append({
+                "role": "assistant", 
+                "content": text_part, 
+                "mermaid": mermaid_blocks,
+                "usage": usage_dict
+            })
+            save_chat(st.session_state.messages)

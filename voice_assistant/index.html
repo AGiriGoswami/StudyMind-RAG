@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-Time AI Voice Assistant</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #121212;
+            color: white;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            overflow: hidden;
+        }
+        
+        h1 { margin-bottom: 5px; }
+        .status { color: #888; font-size: 14px; margin-bottom: 40px; height: 20px; }
+        
+        .mic-container {
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        #mic-btn {
+            width: 120px;
+            height: 120px;
+            border-radius: 50%;
+            background-color: #6C63FF;
+            border: none;
+            cursor: pointer;
+            box-shadow: 0 4px 15px rgba(108, 99, 255, 0.4);
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            outline: none;
+        }
+
+        #mic-btn:active {
+            transform: scale(0.95);
+            background-color: #5A52D5;
+            box-shadow: 0 2px 10px rgba(108, 99, 255, 0.6);
+        }
+        
+        #mic-btn.recording {
+            background-color: #FF4757;
+            box-shadow: 0 0 30px rgba(255, 71, 87, 0.8);
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(255, 71, 87, 0.7); }
+            70% { box-shadow: 0 0 0 30px rgba(255, 71, 87, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(255, 71, 87, 0); }
+        }
+
+        .mic-icon {
+            font-size: 40px;
+            pointer-events: none;
+        }
+        
+        .instruction {
+            margin-top: 30px;
+            font-size: 18px;
+            font-weight: 500;
+        }
+        
+        .text-box {
+            margin-top: 30px;
+            width: 80%;
+            max-width: 600px;
+            height: 150px;
+            background: #1E1E1E;
+            border-radius: 12px;
+            padding: 20px;
+            box-sizing: border-box;
+            overflow-y: auto;
+            color: #E0E0E0;
+            line-height: 1.5;
+            font-size: 16px;
+        }
+        
+        .user-text { color: #6C63FF; font-style: italic; margin-bottom: 10px;}
+    </style>
+</head>
+<body>
+
+    <h1>Voice Assistant</h1>
+    <div class="status" id="status-text">Connecting to server...</div>
+
+    <div class="mic-container">
+        <button id="mic-btn">
+            <span class="mic-icon">🎙️</span>
+        </button>
+    </div>
+    
+    <div class="instruction">Hold to speak</div>
+    
+    <div class="text-box" id="transcript-box">
+        <!-- Text will appear here -->
+    </div>
+
+    <script>
+        const micBtn = document.getElementById('mic-btn');
+        const statusText = document.getElementById('status-text');
+        const transcriptBox = document.getElementById('transcript-box');
+        
+        let ws;
+        let mediaRecorder;
+        let audioChunks = [];
+        
+        let audioQueue = [];
+        let isPlaying = false;
+        let currentAudio = null;
+        
+        let currentAiText = "";
+
+        // Initialize WebSocket
+        function connectWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+            
+            ws.onopen = () => {
+                statusText.innerText = "Listening...";
+            };
+            
+            ws.onclose = () => {
+                statusText.innerText = "Disconnected. Reconnecting...";
+                setTimeout(connectWebSocket, 3000);
+            };
+            
+            ws.onmessage = async (event) => {
+                if (typeof event.data === "string") {
+                    const data = JSON.parse(event.data);
+                    
+                    if (data.type === "status") {
+                        statusText.innerText = data.text;
+                    } else if (data.type === "transcription") {
+                        transcriptBox.innerHTML += `<div class="user-text">You: ${data.text}</div>`;
+                        transcriptBox.scrollTop = transcriptBox.scrollHeight;
+                        currentAiText = "Assistant: ";
+                        transcriptBox.innerHTML += `<div id="current-ai">${currentAiText}</div>`;
+                    } else if (data.type === "text_stream") {
+                        currentAiText += data.text;
+                        const aiDiv = document.getElementById('current-ai');
+                        if (aiDiv) aiDiv.innerText = currentAiText;
+                        transcriptBox.scrollTop = transcriptBox.scrollHeight;
+                    } else if (data.type === "done") {
+                        const aiDiv = document.getElementById('current-ai');
+                        if (aiDiv) aiDiv.id = ""; // remove id so next msg creates a new one
+                    }
+                } else if (event.data instanceof Blob) {
+                    // We received an audio chunk
+                    audioQueue.push(event.data);
+                    playNextAudio();
+                }
+            };
+        }
+
+        function playNextAudio() {
+            if (isPlaying || audioQueue.length === 0) return;
+            
+            isPlaying = true;
+            const blob = audioQueue.shift();
+            const url = URL.createObjectURL(blob);
+            currentAudio = new Audio(url);
+            
+            currentAudio.onended = () => {
+                isPlaying = false;
+                URL.revokeObjectURL(url);
+                playNextAudio();
+            };
+            
+            currentAudio.onerror = () => {
+                console.error("Audio playback error");
+                isPlaying = false;
+                playNextAudio();
+            }
+            
+            currentAudio.play().catch(e => {
+                console.error("Playback failed:", e);
+                isPlaying = false;
+                playNextAudio();
+            });
+        }
+        
+        function stopAudio() {
+            if (currentAudio) {
+                currentAudio.pause();
+                currentAudio.currentTime = 0;
+            }
+            audioQueue = [];
+            isPlaying = false;
+        }
+
+        // Initialize Microphone
+        async function initMic() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+                
+                mediaRecorder.ondataavailable = (event) => {
+                    if (event.data.size > 0) {
+                        audioChunks.push(event.data);
+                    }
+                };
+                
+                mediaRecorder.onstop = () => {
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    audioChunks = [];
+                    // Send to websocket
+                    if (ws.readyState === WebSocket.OPEN) {
+                        ws.send(audioBlob);
+                    }
+                };
+            } catch (err) {
+                console.error("Error accessing microphone", err);
+                statusText.innerText = "Microphone access denied.";
+            }
+        }
+
+        // Events
+        const startRecording = () => {
+            if (!mediaRecorder) return;
+            stopAudio(); // Barge-in: immediately stop AI from talking
+            audioChunks = [];
+            mediaRecorder.start();
+            micBtn.classList.add("recording");
+            statusText.innerText = "Recording...";
+        };
+
+        const stopRecording = () => {
+            if (!mediaRecorder) return;
+            mediaRecorder.stop();
+            micBtn.classList.remove("recording");
+        };
+
+        // Support both mouse and touch for mobile
+        micBtn.addEventListener("mousedown", startRecording);
+        micBtn.addEventListener("mouseup", stopRecording);
+        micBtn.addEventListener("mouseleave", () => {
+            if (micBtn.classList.contains("recording")) stopRecording();
+        });
+        
+        micBtn.addEventListener("touchstart", (e) => { e.preventDefault(); startRecording(); });
+        micBtn.addEventListener("touchend", (e) => { e.preventDefault(); stopRecording(); });
+
+        // Start
+        connectWebSocket();
+        initMic();
+    </script>
+</body>
+</html>
