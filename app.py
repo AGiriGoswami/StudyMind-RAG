@@ -7,6 +7,12 @@ import google.generativeai as genai
 from google.api_core.exceptions import ResourceExhausted
 from dotenv import load_dotenv
 from groq import Groq
+import io
+import re
+import time
+import streamlit.components.v1 as components
+from fpdf import FPDF
+from gtts import gTTS
 
 # Load environment variables for local development
 load_dotenv()
@@ -45,7 +51,87 @@ def extract_text_from_pdf(uploaded_file):
         text += page.get_text("text") + "\n"
     return text
 
-def chunk_text(text, chunk_size=5000, overlap=500):
+def text_to_speech(text):
+    tts = gTTS(text=text, lang='en')
+    fp = io.BytesIO()
+    tts.write_to_fp(fp)
+    return fp
+
+def create_pdf(text):
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Helvetica", size=12)
+    safe_text = text.encode('latin-1', 'replace').decode('latin-1')
+    pdf.multi_cell(0, 10, safe_text)
+    out = pdf.output()
+    if isinstance(out, str):
+        return out.encode('latin-1', 'replace')
+    return bytes(out)
+
+def render_mermaid(code: str):
+    components.html(
+        f"""
+        <div class="mermaid" id="mermaid-chart" style="background-color: white; padding: 20px;">
+            {code}
+        </div>
+        <button id="download-png" style="margin-top: 15px; padding: 10px 15px; background-color: #6C63FF; color: white; border: none; border-radius: 8px; cursor: pointer; font-family: sans-serif;">📥 Download Flowchart as PNG</button>
+        <script type="module">
+            import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+            mermaid.initialize({{ startOnLoad: true }});
+            
+            document.getElementById('download-png').addEventListener('click', function() {{
+                const svg = document.querySelector('.mermaid svg');
+                if (!svg) return;
+                
+                let bBox;
+                try {{
+                    bBox = svg.getBBox();
+                }} catch (e) {{
+                    bBox = svg.getBoundingClientRect();
+                }}
+                const width = Math.max(bBox.width, svg.getBoundingClientRect().width, (svg.viewBox && svg.viewBox.baseVal ? svg.viewBox.baseVal.width : 0));
+                const height = Math.max(bBox.height, svg.getBoundingClientRect().height, (svg.viewBox && svg.viewBox.baseVal ? svg.viewBox.baseVal.height : 0));
+                
+                const svgClone = svg.cloneNode(true);
+                svgClone.setAttribute('width', width);
+                svgClone.setAttribute('height', height);
+                svgClone.style.maxWidth = 'none';
+                
+                const svgData = new XMLSerializer().serializeToString(svgClone);
+                const canvas = document.createElement("canvas");
+                
+                canvas.width = width * 2;
+                canvas.height = height * 2;
+                
+                const ctx = canvas.getContext("2d");
+                ctx.scale(2, 2);
+                
+                const img = new Image();
+                img.setAttribute("src", "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(svgData))));
+                
+                img.onload = function() {{
+                    ctx.fillStyle = "white";
+                    ctx.fillRect(0, 0, width, height);
+                    ctx.drawImage(img, 0, 0, width, height);
+                    const canvasdata = canvas.toDataURL("image/png");
+                    const a = document.createElement("a");
+                    a.download = "flowchart.png";
+                    a.href = canvasdata;
+                    a.click();
+                }};
+            }});
+        </script>
+        """,
+        height=450,
+        scrolling=True,
+    )
+
+def stream_text(text):
+    for word in text.split(" "):
+        yield word + " "
+        time.sleep(0.04)
+
+def chunk_text(text, chunk_size=500, overlap=50):
     words = text.split()
     chunks = []
     for i in range(0, len(words), chunk_size - overlap):
@@ -71,7 +157,7 @@ def create_vector_store(chunks):
     index.add(np.array(embeddings).astype('float32'))
     return index
 
-def query_rag(question, index, chunks, top_k=3):
+def query_rag(question, index, chunks, inc_short=True, inc_long=True, inc_flow=True, top_k=3):
     # Embed the question using Gemini API
     question_embedding = get_gemini_embeddings([question], task_type="retrieval_query")[0]
     
@@ -82,56 +168,132 @@ def query_rag(question, index, chunks, top_k=3):
     relevant_chunks = [chunks[i] for i in indices[0] if i < len(chunks)]
     context = "\n\n".join(relevant_chunks)
     
+    sys_prompt = "You are a helpful assistant. Structure your answer strictly based on the following requirements:\n"
+    if inc_short:
+        sys_prompt += "1. Short Answer: A 1-2 sentence simple summary.\n"
+    if inc_long:
+        sys_prompt += "2. Long Answer: A detailed, extremely simple explanation as if to a beginner.\n"
+    if inc_flow:
+        sys_prompt += "3. Flowchart: You MUST output a complete Mermaid.js flowchart (graph TD) representing the ENTIRE topic. You MUST write the raw mermaid code inside a markdown block exactly like this: ```mermaid\n[your code here]\n```. CRITICAL: You MUST wrap all node text and edge labels in DOUBLE QUOTES to prevent syntax errors. Example: A[\"React.js (Frontend)\"] -->|\"Uses\"| B[\"Node.js\"]\n"
+        
     # Generate answer using Groq (Llama 3.1)
     try:
         chat_completion = groq_client.chat.completions.create(
             messages=[
                 {
                     "role": "system",
-                    "content": "You are a helpful academic assistant."
+                    "content": sys_prompt
                 },
                 {
                     "role": "user",
-                    "content": f"Answer the user's question based ONLY on the following context.\nIf the answer is not in the context, say 'I cannot answer this based on the provided document.'\n\nContext:\n{context}\n\nQuestion: {question}"
+                    "content": f"First, try to answer the question using the following context. If the context doesn't contain the answer, use your general knowledge to answer it.\n\nContext:\n{context}\n\nQuestion: {question}"
                 }
             ],
             model="llama-3.1-8b-instant",
         )
-        return chat_completion.choices[0].message.content
+        return chat_completion.choices[0].message.content, chat_completion.usage
     except Exception as e:
-        return f"An error occurred with Groq: {str(e)}"
+        return f"An error occurred with Groq: {str(e)}", None
 
 # --- UI ---
 st.set_page_config(page_title="StudyMind", page_icon="📚", layout="centered")
+
+st.markdown("""
+<style>
+    .stButton>button {
+        background-color: #6C63FF;
+        color: white;
+        border-radius: 8px;
+        border: none;
+        transition: 0.3s;
+    }
+    .stButton>button:hover {
+        background-color: #5A52D5;
+        box-shadow: 0 4px 8px 0 rgba(0,0,0,0.2);
+    }
+    .stTextArea>div>div>textarea {
+        border-radius: 10px;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 st.title("📚 StudyMind - RAG Academic Assistant")
 
-st.markdown("Upload a PDF document, process it, and ask questions about its content.")
+st.markdown("Upload PDF documents or paste raw text below, then process them to ask questions.")
 
-uploaded_file = st.file_uploader("Upload PDF", type="pdf")
+uploaded_files = st.file_uploader("Upload PDFs (optional)", type="pdf", accept_multiple_files=True)
+pasted_text = st.text_area("Or paste your text here (optional)", height=200)
 
-if uploaded_file is not None:
-    if st.button("Process Document"):
+if pasted_text:
+    word_count = len(pasted_text.split())
+    char_count = len(pasted_text)
+    st.caption(f"📝 **Text stats:** {word_count} words | {char_count} characters")
+
+if uploaded_files or pasted_text.strip():
+    if st.button("Process Data"):
         with st.spinner("Extracting text and generating embeddings via Gemini..."):
-            text = extract_text_from_pdf(uploaded_file)
-            if not text.strip():
-                st.error("No extractable text found in this PDF.")
+            all_text = ""
+            if uploaded_files:
+                for uploaded_file in uploaded_files:
+                    all_text += extract_text_from_pdf(uploaded_file) + "\n"
+            
+            if pasted_text.strip():
+                all_text += pasted_text + "\n"
+            
+            if not all_text.strip():
+                st.error("No extractable text found in the inputs.")
             else:
-                chunks = chunk_text(text)
+                chunks = chunk_text(all_text)
                 index = create_vector_store(chunks)
                 
                 st.session_state.faiss_index = index
                 st.session_state.text_chunks = chunks
-                st.success("Document processed successfully! You can now ask questions.")
+                st.success("Data processed successfully! You can now ask questions.")
 
 if st.session_state.faiss_index is not None:
     st.divider()
+    st.subheader("⚙️ Output Preferences")
+    col_a, col_b, col_c = st.columns(3)
+    with col_a:
+        inc_short = st.checkbox("Show Short Answer", value=True)
+    with col_b:
+        inc_long = st.checkbox("Show Long Answer", value=True)
+    with col_c:
+        inc_flow = st.checkbox("Show Flowchart", value=True)
+
     st.subheader("Ask a Question")
     question = st.text_input("Enter your question based on the document:")
     
     if st.button("Generate Answer"):
         if question.strip():
             with st.spinner("Analyzing document and generating answer..."):
-                answer = query_rag(question, st.session_state.faiss_index, st.session_state.text_chunks)
-                st.info("### Answer\n" + answer)
+                answer, usage = query_rag(question, st.session_state.faiss_index, st.session_state.text_chunks, inc_short, inc_long, inc_flow)
+                
+                if usage:
+                    st.caption(f"⚡ **Token Usage:** {usage.prompt_tokens} input + {usage.completion_tokens} output = **{usage.total_tokens} total tokens**")
+                
+                
+                mermaid_blocks = re.findall(r'```mermaid\n(.*?)\n```', answer, re.DOTALL)
+                text_part = re.sub(r'```mermaid\n.*?\n```', '', answer, flags=re.DOTALL)
+                
+                with st.chat_message("assistant"):
+                    st.write_stream(stream_text(text_part))
+                
+                for code in mermaid_blocks:
+                    render_mermaid(code)
+                
+                try:
+                    audio_fp = text_to_speech(text_part)
+                    st.audio(audio_fp, format='audio/mp3')
+                except Exception as e:
+                    st.error(f"Audio generation failed: {e}")
+                    
+                st.divider()
+                st.write("📥 **Download Answer**")
+                
+                full_text_to_download = text_part + "\n\nFlowchart Code (Mermaid):\n" + "\n".join(mermaid_blocks)
+                
+                pdf_bytes = create_pdf(full_text_to_download)
+                st.download_button("Download PDF", data=pdf_bytes, file_name="answer.pdf", mime="application/pdf")
         else:
             st.warning("Please enter a question.")
