@@ -231,7 +231,7 @@ with st.sidebar:
     st.title("📚 StudyMind Setup")
     st.markdown("Upload PDF documents or paste raw text below to build the knowledge base.")
 
-    uploaded_files = st.file_uploader("Upload PDFs (optional)", accept_multiple_files=True)
+    uploaded_file = st.file_uploader("Upload a PDF (optional)", accept_multiple_files=False)
     pasted_text = st.text_area("Or paste your text here (optional)", height=200)
 
     if pasted_text:
@@ -239,16 +239,15 @@ with st.sidebar:
         char_count = len(pasted_text)
         st.caption(f"📝 **Text stats:** {word_count} words | {char_count} characters")
 
-    if uploaded_files or pasted_text.strip():
+    if uploaded_file or pasted_text.strip():
         if st.button("Process Data"):
             with st.spinner("Extracting text and generating embeddings via Gemini..."):
                 all_text = ""
-                if uploaded_files:
-                    for uploaded_file in uploaded_files:
-                        if uploaded_file.name.lower().endswith(".pdf"):
-                            all_text += extract_text_from_pdf(uploaded_file) + "\n"
-                        else:
-                            st.warning(f"Skipping {uploaded_file.name}: Not a PDF.")
+                if uploaded_file:
+                    if uploaded_file.name.lower().endswith(".pdf"):
+                        all_text += extract_text_from_pdf(uploaded_file) + "\n"
+                    else:
+                        st.warning(f"Skipping {uploaded_file.name}: Not a PDF.")
                 
                 if pasted_text.strip():
                     all_text += pasted_text + "\n"
