@@ -5,5 +5,11 @@ pypdf
 numpy
 python-dotenv
 groq
-gTTS
 streamlit-local-storage
+langchain-text-splitters
+python-docx
+beautifulsoup4
+requests
+rank_bm25
+edge-tts
+gtts

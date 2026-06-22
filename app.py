@@ -15,11 +15,9 @@ import json
 import streamlit.components.v1 as components
 from gtts import gTTS
 
-# Load environment variables for local development
+# Load environment variables
 load_dotenv()
 
-# --- Configuration & Secrets ---
-# Support both .env (local) and Streamlit secrets (cloud)
 try:
     API_KEY = os.getenv("GOOGLE_API_KEY") or st.secrets.get("GOOGLE_API_KEY")
     GROQ_API_KEY = os.getenv("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY")
@@ -32,17 +30,17 @@ if not API_KEY:
     st.stop()
 
 if not GROQ_API_KEY:
-    st.error("Groq API Key is missing. Please set it in .env or Streamlit Secrets. You can get one for free at https://console.groq.com/")
+    st.error("Groq API Key is missing. Please set it in .env or Streamlit Secrets.")
     st.stop()
 
 gemini_client = genai.Client(api_key=API_KEY)
 groq_client = Groq(api_key=GROQ_API_KEY)
 
-# Initialize session state for the vector store
-if "faiss_index" not in st.session_state:
-    st.session_state.faiss_index = None
-if "text_chunks" not in st.session_state:
-    st.session_state.text_chunks = []
+# Session State
+if "faiss_index" not in st.session_state: st.session_state.faiss_index = None
+if "text_chunks" not in st.session_state: st.session_state.text_chunks = []
+if "sources" not in st.session_state: st.session_state.sources = []
+if "flashcards" not in st.session_state: st.session_state.flashcards = []
 
 # --- Helper Functions ---
 def extract_text_from_pdf(uploaded_file):
@@ -63,24 +61,32 @@ def text_to_speech(text):
 def render_mermaid(code: str):
     components.html(
         f"""
-        <div class="mermaid" id="mermaid-chart" style="background-color: white; padding: 20px;">
+        <div class="mermaid" id="mermaid-chart" style="background-color: #111827; color: #F8FAFC; padding: 20px; border-radius: 12px; border: 1px solid #263244;">
             {code}
         </div>
-        <button id="download-png" style="margin-top: 15px; padding: 10px 15px; background-color: #6C63FF; color: white; border: none; border-radius: 8px; cursor: pointer; font-family: sans-serif;">📥 Download Flowchart as PNG</button>
+        <button id="download-png" style="margin-top: 15px; padding: 8px 12px; background-color: #3B82F6; color: white; border: none; border-radius: 6px; cursor: pointer; font-family: 'Inter', sans-serif; font-size: 14px; font-weight: 500;">📥 Download Flowchart as PNG</button>
         <script type="module">
             import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
-            mermaid.initialize({{ startOnLoad: true }});
+            mermaid.initialize({{ 
+                startOnLoad: true,
+                theme: 'dark',
+                themeVariables: {{
+                    fontFamily: 'Inter',
+                    primaryColor: '#1F2937',
+                    primaryTextColor: '#F8FAFC',
+                    primaryBorderColor: '#3B82F6',
+                    lineColor: '#94A3B8',
+                    secondaryColor: '#263244',
+                    tertiaryColor: '#0B1220'
+                }}
+            }});
             
             document.getElementById('download-png').addEventListener('click', function() {{
                 const svg = document.querySelector('.mermaid svg');
                 if (!svg) return;
                 
                 let bBox;
-                try {{
-                    bBox = svg.getBBox();
-                }} catch (e) {{
-                    bBox = svg.getBoundingClientRect();
-                }}
+                try {{ bBox = svg.getBBox(); }} catch (e) {{ bBox = svg.getBoundingClientRect(); }}
                 const width = Math.max(bBox.width, svg.getBoundingClientRect().width, (svg.viewBox && svg.viewBox.baseVal ? svg.viewBox.baseVal.width : 0));
                 const height = Math.max(bBox.height, svg.getBoundingClientRect().height, (svg.viewBox && svg.viewBox.baseVal ? svg.viewBox.baseVal.height : 0));
                 
@@ -102,7 +108,7 @@ def render_mermaid(code: str):
                 img.setAttribute("src", "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(svgData))));
                 
                 img.onload = function() {{
-                    ctx.fillStyle = "white";
+                    ctx.fillStyle = "#111827";
                     ctx.fillRect(0, 0, width, height);
                     ctx.drawImage(img, 0, 0, width, height);
                     const canvasdata = canvas.toDataURL("image/png");
@@ -131,8 +137,6 @@ def chunk_text(text, chunk_size=500, overlap=50):
     return chunks
 
 def get_gemini_embeddings(text_list, task_type="RETRIEVAL_DOCUMENT"):
-    # Gemini returns a list of embeddings (one for each chunk)
-    # The batch limit for gemini-embedding-001 is 100 requests per batch.
     all_embeddings = []
     batch_size = 100
     for i in range(0, len(text_list), batch_size):
@@ -145,28 +149,25 @@ def get_gemini_embeddings(text_list, task_type="RETRIEVAL_DOCUMENT"):
         all_embeddings.extend([e.values for e in result.embeddings])
     return all_embeddings
 
-def create_vector_store(chunks):
-    # Get embeddings from Gemini API
+def create_vector_store(chunks, current_index=None):
     embeddings = get_gemini_embeddings(chunks, task_type="retrieval_document")
-    
-    # Create FAISS index
     dimension = len(embeddings[0])
-    index = faiss.IndexFlatL2(dimension)
+    
+    if current_index is None:
+        index = faiss.IndexFlatL2(dimension)
+    else:
+        index = current_index
+        
     index.add(np.array(embeddings).astype('float32'))
     return index
 
 def query_rag(question, index, chunks, inc_short=True, inc_long=True, inc_flow=True, top_k=3):
-    # Embed the question using Gemini API
     question_embedding = get_gemini_embeddings([question], task_type="retrieval_query")[0]
-    
-    # Search in FAISS
     distances, indices = index.search(np.array([question_embedding]).astype('float32'), top_k)
-    
-    # Retrieve relevant chunks
     relevant_chunks = [chunks[i] for i in indices[0] if i < len(chunks)]
     context = "\n\n".join(relevant_chunks)
     
-    sys_prompt = "You are a helpful assistant. Structure your answer strictly based on the following requirements:\n"
+    sys_prompt = "You are a helpful research assistant. Structure your answer strictly based on the following requirements:\n"
     if inc_short:
         sys_prompt += "1. Short Answer: A 1-2 sentence simple summary.\n"
     if inc_long:
@@ -174,18 +175,11 @@ def query_rag(question, index, chunks, inc_short=True, inc_long=True, inc_flow=T
     if inc_flow:
         sys_prompt += "3. Flowchart: You MUST output a complete Mermaid.js flowchart (graph TD) representing the ENTIRE topic. You MUST write the raw mermaid code inside a markdown block exactly like this: ```mermaid\n[your code here]\n```. CRITICAL MERMAID SYNTAX RULES: 1. You MUST NOT use parentheses (), brackets [], braces {}, or quotes inside node text. 2. DO NOT use special characters in node IDs, only simple letters and numbers (e.g. A1, B2). 3. Avoid long text in nodes. Example: A1[React JS Frontend] -->|Uses| B1[Node JS Backend]\n"
         
-    # Generate answer using Groq (Llama 3.1)
     try:
         chat_completion = groq_client.chat.completions.create(
             messages=[
-                {
-                    "role": "system",
-                    "content": sys_prompt
-                },
-                {
-                    "role": "user",
-                    "content": f"First, try to answer the question using the following context. If the context doesn't contain the answer, use your general knowledge to answer it.\n\nContext:\n{context}\n\nQuestion: {question}"
-                }
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {question}"}
             ],
             model="llama-3.1-8b-instant",
         )
@@ -193,176 +187,385 @@ def query_rag(question, index, chunks, inc_short=True, inc_long=True, inc_flow=T
     except Exception as e:
         return f"An error occurred with Groq: {str(e)}", None
 
-# --- UI ---
-st.set_page_config(page_title="StudyMind", page_icon="📚", layout="centered")
+def generate_flashcards_from_chunks(chunks):
+    if not chunks: return []
+    # Use first few chunks to generate flashcards
+    context = "\n\n".join(chunks[:5])
+    
+    sys_prompt = "You are a helpful educational assistant. Based on the provided context, generate exactly 5 flashcards for studying. You MUST output your response in valid JSON format only, returning a JSON object with a key 'flashcards' containing a list of objects with 'question' and 'answer' keys. Do not include any other text."
+    
+    try:
+        chat_completion = groq_client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": f"Context:\n{context}\n\nGenerate 5 flashcards in JSON format."}
+            ],
+            model="llama-3.1-8b-instant",
+            response_format={"type": "json_object"}
+        )
+        res = chat_completion.choices[0].message.content
+        data = json.loads(res)
+        return data.get("flashcards", [])
+    except Exception as e:
+        st.error(f"Error generating flashcards: {e}")
+        return []
 
-st.markdown("""
+def render_flashcard(question, answer):
+    html = f"""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
+    .flip-card {{
+      background-color: transparent;
+      width: 100%;
+      height: 150px;
+      perspective: 1000px;
+      margin-bottom: 12px;
+      font-family: 'Inter', sans-serif;
+    }}
+    .flip-card-inner {{
+      position: relative;
+      width: 100%;
+      height: 100%;
+      text-align: center;
+      transition: transform 0.6s;
+      transform-style: preserve-3d;
+      cursor: pointer;
+    }}
+    .flip-card:hover .flip-card-inner {{
+      transform: rotateY(180deg);
+    }}
+    .flip-card-front, .flip-card-back {{
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      -webkit-backface-visibility: hidden;
+      backface-visibility: hidden;
+      border-radius: 12px;
+      padding: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-sizing: border-box;
+      border: 1px solid #263244;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+    }}
+    .flip-card-front {{
+      background-color: #1F2937;
+      color: #F8FAFC;
+    }}
+    .flip-card-back {{
+      background-color: #3B82F6;
+      color: white;
+      transform: rotateY(180deg);
+      border-color: #3B82F6;
+    }}
+    </style>
+    <div class="flip-card">
+      <div class="flip-card-inner">
+        <div class="flip-card-front">
+          <p style="margin: 0; font-size: 15px; font-weight: 500;">{question}</p>
+        </div>
+        <div class="flip-card-back">
+          <p style="margin: 0; font-size: 14px; line-height: 1.5;">{answer}</p>
+        </div>
+      </div>
+    </div>
+    """
+    components.html(html, height=165)
+
+# --- UI Setup ---
+st.set_page_config(page_title="StudyMind Workspace", page_icon="📓", layout="wide")
+
+CSS = """
 <style>
-    .stButton>button {
-        background-color: #6C63FF;
-        color: white;
-        border-radius: 8px;
-        border: none;
-        transition: 0.3s;
-    }
-    .stButton>button:hover {
-        background-color: #5A52D5;
-        box-shadow: 0 4px 8px 0 rgba(0,0,0,0.2);
-    }
-    .stTextArea>div>div>textarea {
-        border-radius: 10px;
-    }
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+html, body, [class*="css"] {
+    font-family: 'Inter', sans-serif;
+    background-color: #0B1220 !important;
+    color: #F8FAFC !important;
+}
+
+.stApp { background-color: #0B1220; }
+.stAppHeader { display: none !important; }
+
+/* Layout spacing */
+.main .block-container {
+    padding-top: 2rem !important;
+    padding-bottom: 5rem !important;
+    padding-left: 2rem !important;
+    padding-right: 2rem !important;
+    max-width: 100% !important;
+}
+
+/* Typography */
+h1, h2, h3, h4, h5, h6 { color: #F8FAFC !important; font-weight: 600 !important; }
+p, span, div { color: #F8FAFC; }
+.stMarkdown p { color: #94A3B8; }
+
+/* Buttons */
+.stButton > button {
+    background-color: #1F2937 !important;
+    color: #F8FAFC !important;
+    border: 1px solid #263244 !important;
+    border-radius: 6px !important;
+    font-weight: 500 !important;
+    transition: all 0.2s ease !important;
+    width: 100%;
+}
+.stButton > button:hover {
+    background-color: #263244 !important;
+    border-color: #3B82F6 !important;
+    color: #3B82F6 !important;
+}
+.stButton > button[data-testid="baseButton-primary"] {
+    background-color: #3B82F6 !important;
+    color: white !important;
+    border-color: #3B82F6 !important;
+}
+
+/* Inputs */
+.stTextInput > div > div > input, .stTextArea > div > div > textarea {
+    background-color: #111827 !important;
+    border: 1px solid #263244 !important;
+    border-radius: 8px !important;
+    color: #F8FAFC !important;
+}
+
+/* Chat Input */
+[data-testid="stChatInput"] {
+    background-color: #111827 !important;
+    border: 1px solid #263244 !important;
+    border-radius: 12px !important;
+}
+
+/* Chat Messages */
+.stChatMessage {
+    background-color: transparent !important;
+    border: none !important;
+    padding: 1rem 0 !important;
+}
+[data-testid="chatAvatarIcon-user"] { background-color: #3B82F6 !important; }
+[data-testid="chatAvatarIcon-assistant"] { background-color: #1F2937 !important; }
+.stChatMessage div[data-testid="stMarkdownContainer"] p {
+    color: #F8FAFC !important;
+    font-size: 1rem !important;
+    line-height: 1.6 !important;
+}
+
+/* File Uploader */
+[data-testid="stFileUploader"] {
+    background-color: #111827 !important;
+    border: 1px dashed #3B82F6 !important;
+    border-radius: 8px !important;
+    padding: 1rem !important;
+}
+
+/* Custom CSS Classes via Markdown */
+.source-card {
+    background-color: #1F2937;
+    border: 1px solid #263244;
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 8px;
+    transition: all 0.2s;
+}
+.source-card:hover {
+    border-color: #3B82F6;
+    background-color: #2563EB1A;
+}
+.source-title { font-weight: 500; font-size: 0.9rem; color: #F8FAFC; margin-bottom: 4px; }
+.source-meta { font-size: 0.75rem; color: #94A3B8; }
+.logo-title {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: #F8FAFC;
+    margin-bottom: 24px;
+}
+.logo-icon { color: #3B82F6; }
+hr { border-color: #263244 !important; margin: 1rem 0 !important; }
+
+/* Tabs */
+[data-testid="stTabs"] button {
+    background-color: transparent !important;
+    color: #94A3B8 !important;
+    border-bottom: 2px solid transparent !important;
+}
+[data-testid="stTabs"] button[aria-selected="true"] {
+    color: #3B82F6 !important;
+    border-bottom: 2px solid #3B82F6 !important;
+}
 </style>
-""", unsafe_allow_html=True)
+"""
+st.markdown(CSS, unsafe_allow_html=True)
 
 localS = LocalStorage()
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
-    # Attempt to load from local storage
-    # We must do this carefully because getItem returns the value later in the component lifecycle
     stored_chats = localS.getItem("chat_history")
     if stored_chats and isinstance(stored_chats, str):
-        try:
-            st.session_state.messages = json.loads(stored_chats)
-        except Exception:
-            pass
+        try: st.session_state.messages = json.loads(stored_chats)
+        except Exception: pass
 
-# Sidebar for Setup and Configuration
-with st.sidebar:
-    st.title("📚 StudyMind Setup")
-    st.markdown("Upload PDF documents or paste raw text below to build the knowledge base.")
+# --- Main Layout ---
+col1, col2, col3 = st.columns([1, 2.5, 1], gap="large")
 
-    uploaded_file = st.file_uploader("Upload a PDF (optional)", accept_multiple_files=False)
-    pasted_text = st.text_area("Or paste your text here (optional)", height=200)
-
-    if pasted_text:
-        word_count = len(pasted_text.split())
-        char_count = len(pasted_text)
-        st.caption(f"📝 **Text stats:** {word_count} words | {char_count} characters")
-
-    if uploaded_file or pasted_text.strip():
-        if st.button("Process Data"):
-            with st.spinner("Extracting text and generating embeddings via Gemini..."):
+# LEFT PANEL: Sources
+with col1:
+    st.markdown('<div class="logo-title"><span class="logo-icon">📓</span> StudyMind</div>', unsafe_allow_html=True)
+    
+    with st.container(border=True):
+        st.subheader("Add Source")
+        uploaded_file = st.file_uploader("Upload PDF", accept_multiple_files=False, label_visibility="collapsed")
+        pasted_text = st.text_area("Paste Text", placeholder="Or paste your text here...", height=100, label_visibility="collapsed")
+        
+        if st.button("Add to Knowledge Base", type="primary"):
+            with st.spinner("Processing..."):
                 all_text = ""
+                source_name = ""
                 if uploaded_file:
                     if uploaded_file.name.lower().endswith(".pdf"):
                         all_text += extract_text_from_pdf(uploaded_file) + "\n"
-                    else:
-                        st.warning(f"Skipping {uploaded_file.name}: Not a PDF.")
+                        source_name = uploaded_file.name
                 
                 if pasted_text.strip():
                     all_text += pasted_text + "\n"
+                    if not source_name: source_name = "Pasted Text"
                 
                 if not all_text.strip():
-                    st.error("No extractable text found in the inputs.")
+                    st.error("No extractable text.")
                 else:
                     chunks = chunk_text(all_text)
-                    index = create_vector_store(chunks)
-                    
-                    st.session_state.faiss_index = index
-                    st.session_state.text_chunks = chunks
-                    st.success("Data processed successfully! You can now ask questions.")
+                    st.session_state.faiss_index = create_vector_store(chunks, st.session_state.faiss_index)
+                    st.session_state.text_chunks.extend(chunks)
+                    st.session_state.sources.append({"name": source_name, "words": len(all_text.split())})
+                    st.success("Added!")
 
-    if st.session_state.faiss_index is not None:
-        st.divider()
-        st.subheader("⚙️ Output Preferences")
-        st.session_state.inc_short = st.checkbox("Show Short Answer", value=st.session_state.get("inc_short", True))
-        st.session_state.inc_long = st.checkbox("Show Long Answer", value=st.session_state.get("inc_long", True))
-        st.session_state.inc_flow = st.checkbox("Show Flowchart", value=st.session_state.get("inc_flow", True))
-        
-        st.divider()
-        if st.button("🗑️ Clear Chat History", use_container_width=True):
-            st.session_state.messages = []
-            localS.setItem("chat_history", "[]", key="clear_chat_history")
-            st.rerun()
-
-# Main Chat Interface
-st.title("💬 StudyMind Chat")
-
-if st.session_state.faiss_index is None:
-    st.info("👈 Please process some documents in the sidebar first to begin chatting!")
-else:
-    # Display chat messages from history on app rerun
-    for i, msg in enumerate(st.session_state.messages):
-        with st.chat_message(msg["role"]):
-            if msg["role"] == "user":
-                st.markdown(msg["content"])
-            else:
-                st.markdown(msg["content"])
-                if "mermaid" in msg:
-                    for code in msg["mermaid"]:
-                        render_mermaid(code)
-                if "usage" in msg and msg["usage"]:
-                    u = msg["usage"]
-                    p_tok = u.get("prompt_tokens", 0) if isinstance(u, dict) else u.prompt_tokens
-                    c_tok = u.get("completion_tokens", 0) if isinstance(u, dict) else u.completion_tokens
-                    t_tok = u.get("total_tokens", 0) if isinstance(u, dict) else u.total_tokens
-                    st.caption(f"⚡ **Token Usage:** {p_tok} input + {c_tok} output = **{t_tok} total tokens**")
-                
-                # Only render audio for the last assistant message to save UI performance
-                if i == len(st.session_state.messages) - 1:
-                    text_content = msg.get("content", "")
-                    if text_content.strip():
-                        try:
-                            audio_fp = text_to_speech(text_content)
-                            st.audio(audio_fp, format='audio/mp3')
-                        except Exception as e:
-                            st.error(f"Audio generation failed: {e}")
-
-    # Chat input
-    if prompt := st.chat_input("Ask a question about your documents..."):
-        # Add user message to chat history
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        localS.setItem("chat_history", json.dumps(st.session_state.messages), key="set_chat_history_user")
-        
-        # Display user message in chat message container
-        with st.chat_message("user"):
-            st.markdown(prompt)
+    st.markdown("### Your Sources")
+    if not st.session_state.sources:
+        st.markdown('<p style="color:#94A3B8; font-size:0.85rem;">No sources added yet. Add a PDF or text to begin.</p>', unsafe_allow_html=True)
+    else:
+        for s in st.session_state.sources:
+            st.markdown(f"""
+            <div class="source-card">
+                <div class="source-title">📄 {s['name']}</div>
+                <div class="source-meta">{s['words']} words</div>
+            </div>
+            """, unsafe_allow_html=True)
             
-        # Display assistant response in chat message container
-        with st.chat_message("assistant"):
-            with st.spinner("Analyzing document and generating answer..."):
-                inc_short = st.session_state.get("inc_short", True)
-                inc_long = st.session_state.get("inc_long", True)
-                inc_flow = st.session_state.get("inc_flow", True)
+    st.divider()
+    if st.button("🗑️ Clear Chat History"):
+        st.session_state.messages = []
+        localS.setItem("chat_history", "[]", key="clear_chat_history")
+        st.rerun()
+
+# CENTER PANEL: Chat Workspace
+with col2:
+    st.markdown("### 💬 Workspace")
+    
+    if st.session_state.faiss_index is None:
+        st.info("👈 Upload a document to start analyzing.")
+    else:
+        chat_container = st.container(height=650, border=False)
+        with chat_container:
+            for i, msg in enumerate(st.session_state.messages):
+                with st.chat_message(msg["role"]):
+                    st.markdown(msg["content"])
+                    if "mermaid" in msg:
+                        for code in msg["mermaid"]:
+                            render_mermaid(code)
+                    if "usage" in msg and msg["usage"]:
+                        u = msg["usage"]
+                        t_tok = u.get("total_tokens", 0) if isinstance(u, dict) else u.total_tokens
+                        st.caption(f"⚡ Token Usage: **{t_tok}**")
+                    
+                    if i == len(st.session_state.messages) - 1 and msg["role"] == "assistant":
+                        text_content = msg.get("content", "")
+                        if text_content.strip():
+                            try:
+                                audio_fp = text_to_speech(text_content)
+                                st.audio(audio_fp, format='audio/mp3')
+                            except Exception:
+                                pass
+
+        if prompt := st.chat_input("Ask about your documents..."):
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            localS.setItem("chat_history", json.dumps(st.session_state.messages), key="set_chat_user")
+            st.rerun()
+            
+        if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
+            with chat_container:
+                with st.chat_message("assistant"):
+                    with st.spinner("Analyzing..."):
+                        inc_short = st.session_state.get("inc_short", True)
+                        inc_long = st.session_state.get("inc_long", True)
+                        inc_flow = st.session_state.get("inc_flow", True)
+                        
+                        raw_answer, usage = query_rag(
+                            st.session_state.messages[-1]["content"], 
+                            st.session_state.faiss_index, 
+                            st.session_state.text_chunks, 
+                            inc_short, inc_long, inc_flow
+                        )
+                        
+                        mermaid_blocks = re.findall(r'```mermaid\n(.*?)\n```', raw_answer, re.DOTALL)
+                        text_part = re.sub(r'```mermaid\n.*?\n```', '', raw_answer, flags=re.DOTALL)
+                        
+                        st.write_stream(stream_text(text_part))
+                        for code in mermaid_blocks: render_mermaid(code)
+                        
+                        if usage:
+                            st.caption(f"⚡ Token Usage: **{usage.total_tokens}**")
+                        
+                        if text_part.strip():
+                            try:
+                                audio_fp = text_to_speech(text_part)
+                                st.audio(audio_fp, format='audio/mp3')
+                            except Exception:
+                                pass
+                                
+                    usage_dict = {"prompt_tokens": usage.prompt_tokens, "completion_tokens": usage.completion_tokens, "total_tokens": usage.total_tokens} if usage else None
+                    st.session_state.messages.append({
+                        "role": "assistant", 
+                        "content": text_part, 
+                        "mermaid": mermaid_blocks,
+                        "usage": usage_dict
+                    })
+                    localS.setItem("chat_history", json.dumps(st.session_state.messages), key="set_chat_assistant")
+                    st.rerun()
+
+# RIGHT PANEL: Notebook & Actions
+with col3:
+    st.markdown("### 📝 Notebook")
+    with st.container(border=True):
+        tab1, tab2, tab3 = st.tabs(["Notes", "Flashcards", "Mind Maps"])
+        
+        with tab1:
+            st.markdown('<p style="font-size:0.85rem; color:#94A3B8;">Save key insights here.</p>', unsafe_allow_html=True)
+            st.text_area("Scratchpad", placeholder="Take notes while you research...", height=250, label_visibility="collapsed")
+            st.button("Save Note")
+            
+        with tab2:
+            st.markdown('<p style="font-size:0.85rem; color:#94A3B8;">Generate flashcards from sources.</p>', unsafe_allow_html=True)
+            if not st.session_state.text_chunks:
+                st.info("Upload a document first to generate flashcards.")
+            else:
+                if st.button("Generate Flashcards"):
+                    with st.spinner("Generating..."):
+                        st.session_state.flashcards = generate_flashcards_from_chunks(st.session_state.text_chunks)
                 
-                raw_answer, usage = query_rag(
-                    prompt, 
-                    st.session_state.faiss_index, 
-                    st.session_state.text_chunks, 
-                    inc_short, 
-                    inc_long, 
-                    inc_flow
-                )
+                if st.session_state.flashcards:
+                    st.markdown("---")
+                    for fc in st.session_state.flashcards:
+                        render_flashcard(fc.get('question', 'Q'), fc.get('answer', 'A'))
                 
-                mermaid_blocks = re.findall(r'```mermaid\n(.*?)\n```', raw_answer, re.DOTALL)
-                text_part = re.sub(r'```mermaid\n.*?\n```', '', raw_answer, flags=re.DOTALL)
-                
-                # Stream the text portion
-                st.write_stream(stream_text(text_part))
-                
-                # Render Flowcharts
-                for code in mermaid_blocks:
-                    render_mermaid(code)
-                
-                if usage:
-                    st.caption(f"⚡ **Token Usage:** {usage.prompt_tokens} input + {usage.completion_tokens} output = **{usage.total_tokens} total tokens**")
-                
-                # Try TTS only if there is text
-                if text_part.strip():
-                    try:
-                        audio_fp = text_to_speech(text_part)
-                        st.audio(audio_fp, format='audio/mp3')
-                    except Exception as e:
-                        st.error(f"Audio generation failed: {e}")
-                
-            # Add assistant response to chat history
-            usage_dict = {"prompt_tokens": usage.prompt_tokens, "completion_tokens": usage.completion_tokens, "total_tokens": usage.total_tokens} if usage else None
-            st.session_state.messages.append({
-                "role": "assistant", 
-                "content": text_part, 
-                "mermaid": mermaid_blocks,
-                "usage": usage_dict
-            })
-            localS.setItem("chat_history", json.dumps(st.session_state.messages), key="set_chat_history_assistant")
+        with tab3:
+            st.markdown('<p style="font-size:0.85rem; color:#94A3B8;">Visualize your topics.</p>', unsafe_allow_html=True)
+            st.session_state.inc_flow = st.checkbox("Enable Auto-Mind Maps in Chat", value=st.session_state.get("inc_flow", True))
+            st.caption("When enabled, the AI will automatically generate Mermaid diagrams for complex topics.")
+
+    st.markdown("### ⚙️ Preferences")
+    with st.container(border=True):
+        st.session_state.inc_short = st.checkbox("Include Summary", value=st.session_state.get("inc_short", True))
+        st.session_state.inc_long = st.checkbox("Include Deep Dive", value=st.session_state.get("inc_long", True))
