@@ -5,7 +5,6 @@ import faiss
 import numpy as np
 from google import genai
 from google.genai import types
-from streamlit_local_storage import LocalStorage
 from dotenv import load_dotenv
 from groq import Groq
 import io
@@ -14,6 +13,12 @@ import time
 import json
 import streamlit.components.v1 as components
 from gtts import gTTS
+import subprocess
+import sys
+import uuid
+import requests
+from bs4 import BeautifulSoup
+from youtube_transcript_api import YouTubeTranscriptApi
 
 # Load environment variables
 load_dotenv()
@@ -36,11 +41,92 @@ if not GROQ_API_KEY:
 gemini_client = genai.Client(api_key=API_KEY)
 groq_client = Groq(api_key=GROQ_API_KEY)
 
-# Session State
-if "faiss_index" not in st.session_state: st.session_state.faiss_index = None
-if "text_chunks" not in st.session_state: st.session_state.text_chunks = []
-if "sources" not in st.session_state: st.session_state.sources = []
-if "flashcards" not in st.session_state: st.session_state.flashcards = []
+
+import os
+import json
+import faiss
+import uuid
+
+WORKSPACE_DIR = ".workspace"
+if not os.path.exists(WORKSPACE_DIR):
+    os.makedirs(WORKSPACE_DIR)
+
+def load_state():
+    if "threads" not in st.session_state:
+        threads_path = os.path.join(WORKSPACE_DIR, "chat_history.json")
+        if os.path.exists(threads_path):
+            try:
+                with open(threads_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    st.session_state.threads = data.get("threads", {})
+                    st.session_state.active_thread_id = data.get("active_thread_id")
+            except Exception:
+                st.session_state.threads = {}
+                st.session_state.active_thread_id = None
+        else:
+            st.session_state.threads = {}
+            st.session_state.active_thread_id = None
+            
+        if not st.session_state.threads:
+            default_id = str(uuid.uuid4())
+            st.session_state.threads[default_id] = {"name": "General Chat", "messages": []}
+            st.session_state.active_thread_id = default_id
+            
+    if "saved_notes" not in st.session_state:
+        notes_path = os.path.join(WORKSPACE_DIR, "saved_notes.json")
+        if os.path.exists(notes_path):
+            try:
+                with open(notes_path, "r", encoding="utf-8") as f:
+                    st.session_state.saved_notes = json.load(f)
+            except Exception:
+                st.session_state.saved_notes = []
+        else:
+            st.session_state.saved_notes = []
+            
+    if "sources" not in st.session_state:
+        meta_path = os.path.join(WORKSPACE_DIR, "documents_metadata.json")
+        faiss_path = os.path.join(WORKSPACE_DIR, "faiss_index.bin")
+        if os.path.exists(meta_path):
+            try:
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    st.session_state.sources = data.get("sources", [])
+                    st.session_state.text_chunks = data.get("text_chunks", [])
+            except Exception:
+                st.session_state.sources = []
+                st.session_state.text_chunks = []
+        else:
+            st.session_state.sources = []
+            st.session_state.text_chunks = []
+            
+        if os.path.exists(faiss_path):
+            try:
+                st.session_state.faiss_index = faiss.read_index(faiss_path)
+            except Exception:
+                st.session_state.faiss_index = None
+        else:
+            st.session_state.faiss_index = None
+            
+    if "flashcards" not in st.session_state:
+        st.session_state.flashcards = []
+
+def save_threads():
+    with open(os.path.join(WORKSPACE_DIR, "chat_history.json"), "w", encoding="utf-8") as f:
+        json.dump({"active_thread_id": st.session_state.active_thread_id, "threads": st.session_state.threads}, f)
+
+def save_notes():
+    with open(os.path.join(WORKSPACE_DIR, "saved_notes.json"), "w", encoding="utf-8") as f:
+        json.dump(st.session_state.saved_notes, f)
+
+def save_sources():
+    with open(os.path.join(WORKSPACE_DIR, "documents_metadata.json"), "w", encoding="utf-8") as f:
+        json.dump({"sources": st.session_state.sources, "text_chunks": st.session_state.text_chunks}, f)
+    if st.session_state.faiss_index is not None:
+        faiss.write_index(st.session_state.faiss_index, os.path.join(WORKSPACE_DIR, "faiss_index.bin"))
+
+# Call load state early
+load_state()
+
 
 # --- Helper Functions ---
 def extract_text_from_pdf(uploaded_file):
@@ -50,7 +136,41 @@ def extract_text_from_pdf(uploaded_file):
         page_text = page.extract_text()
         if page_text:
             text += page_text + "\n"
-    return text
+    return text, len(pdf_reader.pages)
+
+def extract_text_from_url(url):
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.content, 'html.parser')
+        # Remove script and style elements to isolate article text
+        for script in soup(["script", "style", "nav", "footer", "header"]):
+            script.extract()
+        text = soup.get_text(separator=' ', strip=True)
+        return text
+    except Exception as e:
+        st.error(f"Error extracting URL: {e}")
+        return ""
+
+def extract_text_from_youtube(url):
+    try:
+        # Extract video ID
+        video_id = None
+        if "v=" in url:
+            video_id = url.split("v=")[1].split("&")[0]
+        elif "youtu.be/" in url:
+            video_id = url.split("youtu.be/")[1].split("?")[0]
+            
+        if not video_id:
+            st.error("Invalid YouTube URL format.")
+            return ""
+            
+        transcript = YouTubeTranscriptApi.get_transcript(video_id)
+        text = " ".join([t['text'] for t in transcript])
+        return text
+    except Exception as e:
+        st.error(f"Error fetching YouTube transcript: {e}")
+        return ""
 
 def text_to_speech(text):
     tts = gTTS(text=text, lang='en')
@@ -273,6 +393,55 @@ def render_flashcard(question, answer):
     """
     components.html(html, height=165)
 
+def generate_podcast_audio(chunks):
+    if not chunks: return None
+    context = "\n\n".join(chunks[:8]) # Limit chunks to avoid token limit but get a good overview
+    
+    sys_prompt = "You are a podcast producer. Based on the provided context, write a short, engaging conversational podcast script (around 1-2 minutes of speaking) summarizing the key concepts. There are two speakers: 'Host' and 'Guest'. You MUST output your response in valid JSON format only, returning a JSON object with a key 'transcript' containing a list of objects with 'speaker' and 'text' keys. Do not include any other text."
+    
+    try:
+        chat_completion = groq_client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": f"Context:\n{context}\n\nGenerate the podcast transcript in JSON format."}
+            ],
+            model="llama-3.1-8b-instant",
+            response_format={"type": "json_object"}
+        )
+        res = chat_completion.choices[0].message.content
+        data = json.loads(res)
+        transcript = data.get("transcript", [])
+    except Exception as e:
+        st.error(f"Error generating transcript: {e}")
+        return None
+        
+    if not transcript: return None
+    
+    audio_files = []
+    for i, line in enumerate(transcript):
+        speaker = line.get("speaker", "Host")
+        text = line.get("text", "")
+        if not text: continue
+        
+        # Select two distinct edge-tts voices
+        voice = "en-US-AriaNeural" if speaker == "Host" else "en-US-ChristopherNeural"
+        out_file = f"temp_audio_{i}.mp3"
+        subprocess.run([sys.executable, "-m", "edge_tts", "--voice", voice, "--text", text, "--write-media", out_file], check=True)
+        audio_files.append(out_file)
+        
+    combined_file = "podcast_overview.mp3"
+    try:
+        with open(combined_file, "wb") as outfile:
+            for f in audio_files:
+                if os.path.exists(f):
+                    with open(f, "rb") as infile:
+                        outfile.write(infile.read())
+                    os.remove(f) # cleanup
+        return combined_file
+    except Exception as e:
+        st.error(f"Error combining audio: {e}")
+        return None
+
 # --- UI Setup ---
 st.set_page_config(page_title="StudyMind Workspace", page_icon="📓", layout="wide")
 
@@ -395,39 +564,50 @@ hr { border-color: #263244 !important; margin: 1rem 0 !important; }
     color: #3B82F6 !important;
     border-bottom: 2px solid #3B82F6 !important;
 }
+
+/* Expanders */
+[data-testid="stExpander"] {
+    background-color: #111827 !important;
+    border: 1px solid #263244 !important;
+    border-radius: 8px !important;
+}
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
 
-localS = LocalStorage()
 
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-    stored_chats = localS.getItem("chat_history")
-    if stored_chats and isinstance(stored_chats, str):
-        try: st.session_state.messages = json.loads(stored_chats)
-        except Exception: pass
+
 
 # --- Main Layout ---
 col1, col2, col3 = st.columns([1, 2.5, 1], gap="large")
 
-# LEFT PANEL: Sources
+# LEFT PANEL: Sources & History
 with col1:
     st.markdown('<div class="logo-title"><span class="logo-icon">📓</span> StudyMind</div>', unsafe_allow_html=True)
     
     with st.container(border=True):
         st.subheader("Add Source")
         uploaded_file = st.file_uploader("Upload PDF", accept_multiple_files=False, label_visibility="collapsed")
+        input_url = st.text_input("Paste URL", placeholder="https:// (Web or YouTube)", label_visibility="collapsed")
         pasted_text = st.text_area("Paste Text", placeholder="Or paste your text here...", height=100, label_visibility="collapsed")
         
         if st.button("Add to Knowledge Base", type="primary"):
             with st.spinner("Processing..."):
                 all_text = ""
                 source_name = ""
+                num_pages = 0
                 if uploaded_file:
                     if uploaded_file.name.lower().endswith(".pdf"):
-                        all_text += extract_text_from_pdf(uploaded_file) + "\n"
+                        all_text, num_pages = extract_text_from_pdf(uploaded_file)
                         source_name = uploaded_file.name
+                        
+                if input_url.strip():
+                    if "youtube.com" in input_url or "youtu.be" in input_url:
+                        all_text += extract_text_from_youtube(input_url.strip()) + "\n"
+                        source_name = "YouTube Video" if not source_name else source_name
+                    elif input_url.startswith("http"):
+                        all_text += extract_text_from_url(input_url.strip()) + "\n"
+                        source_name = "Web Article" if not source_name else source_name
                 
                 if pasted_text.strip():
                     all_text += pasted_text + "\n"
@@ -439,7 +619,16 @@ with col1:
                     chunks = chunk_text(all_text)
                     st.session_state.faiss_index = create_vector_store(chunks, st.session_state.faiss_index)
                     st.session_state.text_chunks.extend(chunks)
-                    st.session_state.sources.append({"name": source_name, "words": len(all_text.split())})
+                    words = len(all_text.split())
+                    reading_time = max(1, words // 200)
+                    st.session_state.sources.append({
+                        "name": source_name, 
+                        "words": words,
+                        "pages": num_pages,
+                        "reading_time": reading_time,
+                        "raw_text": all_text
+                    })
+                    save_sources()
                     st.success("Added!")
 
     st.markdown("### Your Sources")
@@ -447,29 +636,44 @@ with col1:
         st.markdown('<p style="color:#94A3B8; font-size:0.85rem;">No sources added yet. Add a PDF or text to begin.</p>', unsafe_allow_html=True)
     else:
         for s in st.session_state.sources:
+            page_text = f" • {s['pages']} pages" if s['pages'] > 0 else ""
             st.markdown(f"""
             <div class="source-card">
                 <div class="source-title">📄 {s['name']}</div>
-                <div class="source-meta">{s['words']} words</div>
+                <div class="source-meta">{s['words']} words{page_text} • ~{s['reading_time']} min read</div>
             </div>
             """, unsafe_allow_html=True)
+            with st.expander("Preview Text"):
+                st.markdown(f"<div style='height: 150px; overflow-y: auto; font-size: 0.8rem; color: #94A3B8;'>{s['raw_text']}</div>", unsafe_allow_html=True)
             
     st.divider()
-    if st.button("🗑️ Clear Chat History"):
-        st.session_state.messages = []
-        localS.setItem("chat_history", "[]", key="clear_chat_history")
+    st.markdown("### Conversations")
+    if st.button("💬 New Conversation", use_container_width=True):
+        new_id = str(uuid.uuid4())
+        st.session_state.threads[new_id] = {"name": f"Conversation {len(st.session_state.threads)+1}", "messages": []}
+        st.session_state.active_thread_id = new_id
+        save_threads()
         st.rerun()
+        
+    for t_id, thread in reversed(list(st.session_state.threads.items())):
+        is_active = (t_id == st.session_state.active_thread_id)
+        btn_type = "primary" if is_active else "secondary"
+        if st.button(f"🗨️ {thread['name']}", key=f"thread_{t_id}", type=btn_type, use_container_width=True):
+            st.session_state.active_thread_id = t_id
+            save_threads()
+            st.rerun()
 
 # CENTER PANEL: Chat Workspace
 with col2:
     st.markdown("### 💬 Workspace")
+    active_thread = st.session_state.threads.get(st.session_state.active_thread_id, {"messages": []})
     
     if st.session_state.faiss_index is None:
         st.info("👈 Upload a document to start analyzing.")
     else:
         chat_container = st.container(height=650, border=False)
         with chat_container:
-            for i, msg in enumerate(st.session_state.messages):
+            for i, msg in enumerate(active_thread["messages"]):
                 with st.chat_message(msg["role"]):
                     st.markdown(msg["content"])
                     if "mermaid" in msg:
@@ -480,7 +684,7 @@ with col2:
                         t_tok = u.get("total_tokens", 0) if isinstance(u, dict) else u.total_tokens
                         st.caption(f"⚡ Token Usage: **{t_tok}**")
                     
-                    if i == len(st.session_state.messages) - 1 and msg["role"] == "assistant":
+                    if i == len(active_thread["messages"]) - 1 and msg["role"] == "assistant":
                         text_content = msg.get("content", "")
                         if text_content.strip():
                             try:
@@ -490,11 +694,14 @@ with col2:
                                 pass
 
         if prompt := st.chat_input("Ask about your documents..."):
-            st.session_state.messages.append({"role": "user", "content": prompt})
-            localS.setItem("chat_history", json.dumps(st.session_state.messages), key="set_chat_user")
+            active_thread["messages"].append({"role": "user", "content": prompt})
+            # Generate a summary name for the thread if it's the first message
+            if len(active_thread["messages"]) == 1:
+                active_thread["name"] = prompt[:20] + "..." if len(prompt) > 20 else prompt
+            save_threads()
             st.rerun()
             
-        if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
+        if active_thread["messages"] and active_thread["messages"][-1]["role"] == "user":
             with chat_container:
                 with st.chat_message("assistant"):
                     with st.spinner("Analyzing..."):
@@ -503,7 +710,7 @@ with col2:
                         inc_flow = st.session_state.get("inc_flow", True)
                         
                         raw_answer, usage = query_rag(
-                            st.session_state.messages[-1]["content"], 
+                            active_thread["messages"][-1]["content"], 
                             st.session_state.faiss_index, 
                             st.session_state.text_chunks, 
                             inc_short, inc_long, inc_flow
@@ -526,26 +733,51 @@ with col2:
                                 pass
                                 
                     usage_dict = {"prompt_tokens": usage.prompt_tokens, "completion_tokens": usage.completion_tokens, "total_tokens": usage.total_tokens} if usage else None
-                    st.session_state.messages.append({
+                    active_thread["messages"].append({
                         "role": "assistant", 
                         "content": text_part, 
                         "mermaid": mermaid_blocks,
                         "usage": usage_dict
                     })
-                    localS.setItem("chat_history", json.dumps(st.session_state.messages), key="set_chat_assistant")
+                    save_threads()
                     st.rerun()
 
 # RIGHT PANEL: Notebook & Actions
 with col3:
     st.markdown("### 📝 Notebook")
     with st.container(border=True):
-        tab1, tab2, tab3 = st.tabs(["Notes", "Flashcards", "Mind Maps"])
+        tab1, tab2, tab3, tab4 = st.tabs(["Notes", "Flashcards", "Mind Maps", "Podcast"])
         
         with tab1:
             st.markdown('<p style="font-size:0.85rem; color:#94A3B8;">Save key insights here.</p>', unsafe_allow_html=True)
-            st.text_area("Scratchpad", placeholder="Take notes while you research...", height=250, label_visibility="collapsed")
-            st.button("Save Note")
+            current_note = st.text_area("Scratchpad", placeholder="Take notes while you research...", height=120, label_visibility="collapsed")
             
+            if st.button("Save Note"):
+                if current_note.strip():
+                    import datetime
+                    new_note = {
+                        "text": current_note.strip(), 
+                        "time": datetime.datetime.now().strftime("%b %d, %I:%M %p")
+                    }
+                    st.session_state.saved_notes.append(new_note)
+                    save_notes()
+                    st.rerun()
+            
+            if st.session_state.saved_notes:
+                st.markdown("---")
+                st.markdown('<p style="font-size:0.85rem; color:#94A3B8; margin-bottom: 8px;">Saved Notes</p>', unsafe_allow_html=True)
+                for i, note in enumerate(reversed(st.session_state.saved_notes)):
+                    st.markdown(f"""
+                    <div class="source-card" style="margin-bottom: 8px; padding: 10px;">
+                        <div style="font-size: 0.70rem; color: #94A3B8; margin-bottom: 4px;">{note.get('time', '')}</div>
+                        <div style="font-size: 0.9rem; color: #F8FAFC; white-space: pre-wrap;">{note.get('text', '')}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                if st.button("Clear Notes", key="btn_clear_notes"):
+                    st.session_state.saved_notes = []
+                    save_notes()
+                    st.rerun()
         with tab2:
             st.markdown('<p style="font-size:0.85rem; color:#94A3B8;">Generate flashcards from sources.</p>', unsafe_allow_html=True)
             if not st.session_state.text_chunks:
@@ -564,6 +796,23 @@ with col3:
             st.markdown('<p style="font-size:0.85rem; color:#94A3B8;">Visualize your topics.</p>', unsafe_allow_html=True)
             st.session_state.inc_flow = st.checkbox("Enable Auto-Mind Maps in Chat", value=st.session_state.get("inc_flow", True))
             st.caption("When enabled, the AI will automatically generate Mermaid diagrams for complex topics.")
+            
+        with tab4:
+            st.markdown('<p style="font-size:0.85rem; color:#94A3B8;">Listen to a conversational overview.</p>', unsafe_allow_html=True)
+            if not st.session_state.text_chunks:
+                st.info("Upload a document first to generate a podcast.")
+            else:
+                if st.button("Generate Audio Overview"):
+                    with st.spinner("Writing script and synthesizing voices..."):
+                        audio_path = generate_podcast_audio(st.session_state.text_chunks)
+                        if audio_path and os.path.exists(audio_path):
+                            st.session_state.podcast_audio = audio_path
+                
+                if st.session_state.get("podcast_audio") and os.path.exists(st.session_state.podcast_audio):
+                    st.markdown("---")
+                    st.success("Podcast Ready!")
+                    with open(st.session_state.podcast_audio, "rb") as f:
+                        st.audio(f.read(), format="audio/mp3")
 
     st.markdown("### ⚙️ Preferences")
     with st.container(border=True):

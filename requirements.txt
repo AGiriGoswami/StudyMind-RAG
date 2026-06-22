@@ -13,3 +13,4 @@ requests
 rank_bm25
 edge-tts
 gtts
+youtube-transcript-api
