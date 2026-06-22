@@ -92,9 +92,11 @@ def load_state():
                     data = json.load(f)
                     st.session_state.sources = data.get("sources", [])
                     st.session_state.text_chunks = data.get("text_chunks", [])
+                    st.session_state.suggested_questions = data.get("suggested_questions", [])
             except Exception:
                 st.session_state.sources = []
                 st.session_state.text_chunks = []
+                st.session_state.suggested_questions = []
         else:
             st.session_state.sources = []
             st.session_state.text_chunks = []
@@ -120,7 +122,7 @@ def save_notes():
 
 def save_sources():
     with open(os.path.join(WORKSPACE_DIR, "documents_metadata.json"), "w", encoding="utf-8") as f:
-        json.dump({"sources": st.session_state.sources, "text_chunks": st.session_state.text_chunks}, f)
+        json.dump({"sources": st.session_state.sources, "text_chunks": st.session_state.text_chunks, "suggested_questions": st.session_state.get("suggested_questions", [])}, f)
     if st.session_state.faiss_index is not None:
         faiss.write_index(st.session_state.faiss_index, os.path.join(WORKSPACE_DIR, "faiss_index.bin"))
 
@@ -165,8 +167,9 @@ def extract_text_from_youtube(url):
             st.error("Invalid YouTube URL format.")
             return ""
             
-        transcript = YouTubeTranscriptApi.get_transcript(video_id)
-        text = " ".join([t['text'] for t in transcript])
+        api = YouTubeTranscriptApi()
+        transcript = api.fetch(video_id)
+        text = " ".join([t.text for t in transcript])
         return text
     except Exception as e:
         st.error(f"Error fetching YouTube transcript: {e}")
@@ -249,7 +252,7 @@ def stream_text(text):
         yield word + " "
         time.sleep(0.04)
 
-def chunk_text(text, chunk_size=500, overlap=50):
+def chunk_text(text, chunk_size=1000, overlap=100):
     words = text.split()
     chunks = []
     for i in range(0, len(words), chunk_size - overlap):
@@ -258,15 +261,29 @@ def chunk_text(text, chunk_size=500, overlap=50):
 
 def get_gemini_embeddings(text_list, task_type="RETRIEVAL_DOCUMENT"):
     all_embeddings = []
-    batch_size = 100
+    batch_size = 50
     for i in range(0, len(text_list), batch_size):
         batch = text_list[i:i + batch_size]
-        result = gemini_client.models.embed_content(
-            model="gemini-embedding-001",
-            contents=batch,
-            config=types.EmbedContentConfig(task_type=task_type.upper())
-        )
-        all_embeddings.extend([e.values for e in result.embeddings])
+        while True:
+            try:
+                result = gemini_client.models.embed_content(
+                    model="gemini-embedding-001",
+                    contents=batch,
+                    config=types.EmbedContentConfig(task_type=task_type.upper())
+                )
+                all_embeddings.extend([e.values for e in result.embeddings])
+                break
+            except Exception as e:
+                error_msg = str(e)
+                if "429" in error_msg:
+                    import re
+                    match = re.search(r"Please retry in (\d+\.?\d*)s", error_msg)
+                    sleep_time = float(match.group(1)) + 2 if match else 45
+                    st.toast(f"⏳ Google API Limit: Pausing upload for {int(sleep_time)} seconds...")
+                    time.sleep(sleep_time)
+                else:
+                    raise e
+        time.sleep(0.5)
     return all_embeddings
 
 def create_vector_store(chunks, current_index=None):
@@ -281,7 +298,7 @@ def create_vector_store(chunks, current_index=None):
     index.add(np.array(embeddings).astype('float32'))
     return index
 
-def query_rag(question, index, chunks, inc_short=True, inc_long=True, inc_flow=True, top_k=3):
+def query_rag(question, index, chunks, inc_short=True, inc_long=True, top_k=3):
     question_embedding = get_gemini_embeddings([question], task_type="retrieval_query")[0]
     distances, indices = index.search(np.array([question_embedding]).astype('float32'), top_k)
     relevant_chunks = [chunks[i] for i in indices[0] if i < len(chunks)]
@@ -291,9 +308,8 @@ def query_rag(question, index, chunks, inc_short=True, inc_long=True, inc_flow=T
     if inc_short:
         sys_prompt += "1. Short Answer: A 1-2 sentence simple summary.\n"
     if inc_long:
-        sys_prompt += "2. Long Answer: A detailed, extremely simple explanation as if to a beginner.\n"
-    if inc_flow:
-        sys_prompt += "3. Flowchart: You MUST output a complete Mermaid.js flowchart (graph TD) representing the ENTIRE topic. You MUST write the raw mermaid code inside a markdown block exactly like this: ```mermaid\n[your code here]\n```. CRITICAL MERMAID SYNTAX RULES: 1. You MUST NOT use parentheses (), brackets [], braces {}, or quotes inside node text. 2. DO NOT use special characters in node IDs, only simple letters and numbers (e.g. A1, B2). 3. Avoid long text in nodes. Example: A1[React JS Frontend] -->|Uses| B1[Node JS Backend]\n"
+        sys_prompt += "2. Long Answer: A detailed, extremely simple explanation as if to a beginner. You MUST use highly readable bullet points to structure your explanation.\n"
+    sys_prompt += "3. Flowchart: If the user specifically asks for a flowchart, mind map, or diagram in their prompt, you MUST output a complete Mermaid.js flowchart (graph TD) representing the topic. You MUST write the raw mermaid code inside a markdown block exactly like this: ```mermaid\n[your code here]\n```. CRITICAL MERMAID SYNTAX RULES: 1. You MUST NOT use parentheses (), brackets [], braces {}, or quotes inside node text. 2. DO NOT use special characters in node IDs, only simple letters and numbers. If the user does NOT ask for a flowchart/diagram, DO NOT include one.\n"
         
     try:
         chat_completion = groq_client.chat.completions.create(
@@ -307,10 +323,31 @@ def query_rag(question, index, chunks, inc_short=True, inc_long=True, inc_flow=T
     except Exception as e:
         return f"An error occurred with Groq: {str(e)}", None
 
+
+def generate_suggested_questions(chunks):
+    if not chunks: return []
+    # Only use the first 1000 characters to prevent hitting Groq's 6000 TPM limit!
+    context = chunks[0][:1000]
+    sys_prompt = "You are an educational assistant. Based on the context, suggest exactly 4 short, insightful questions a user could ask to learn more. Return a JSON object with a key 'questions' containing a list of strings. Do not include any other text."
+    try:
+        chat_completion = groq_client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": f"Context:\n{context}\n\nGenerate 4 questions in JSON."}
+            ],
+            model="llama-3.1-8b-instant",
+            response_format={"type": "json_object"}
+        )
+        import json
+        res = chat_completion.choices[0].message.content
+        return json.loads(res).get("questions", [])
+    except Exception:
+        return []
+
 def generate_flashcards_from_chunks(chunks):
     if not chunks: return []
     # Use first few chunks to generate flashcards
-    context = "\n\n".join(chunks[:5])
+    context = "\n\n".join(chunks[:2])
     
     sys_prompt = "You are a helpful educational assistant. Based on the provided context, generate exactly 5 flashcards for studying. You MUST output your response in valid JSON format only, returning a JSON object with a key 'flashcards' containing a list of objects with 'question' and 'answer' keys. Do not include any other text."
     
@@ -393,11 +430,13 @@ def render_flashcard(question, answer):
     """
     components.html(html, height=165)
 
-def generate_podcast_audio(chunks):
+def generate_podcast_audio(chunks, status_container=None):
     if not chunks: return None
-    context = "\n\n".join(chunks[:8]) # Limit chunks to avoid token limit but get a good overview
+    context = "\n\n".join(chunks[:3]) # Limit chunks to avoid free-tier token limit (6000 TPM)
     
     sys_prompt = "You are a podcast producer. Based on the provided context, write a short, engaging conversational podcast script (around 1-2 minutes of speaking) summarizing the key concepts. There are two speakers: 'Host' and 'Guest'. You MUST output your response in valid JSON format only, returning a JSON object with a key 'transcript' containing a list of objects with 'speaker' and 'text' keys. Do not include any other text."
+    
+    if status_container: status_container.write("✍️ Writing script with AI...")
     
     try:
         chat_completion = groq_client.chat.completions.create(
@@ -417,6 +456,8 @@ def generate_podcast_audio(chunks):
         
     if not transcript: return None
     
+    if status_container: status_container.write(f"🎙️ Generating voices for {len(transcript)} lines of dialogue...")
+    
     audio_files = []
     for i, line in enumerate(transcript):
         speaker = line.get("speaker", "Host")
@@ -425,10 +466,12 @@ def generate_podcast_audio(chunks):
         
         # Select two distinct edge-tts voices
         voice = "en-US-AriaNeural" if speaker == "Host" else "en-US-ChristopherNeural"
+        if status_container: status_container.write(f"🗣️ Recording {speaker} (Line {i+1}/{len(transcript)})...")
         out_file = f"temp_audio_{i}.mp3"
         subprocess.run([sys.executable, "-m", "edge_tts", "--voice", voice, "--text", text, "--write-media", out_file], check=True)
         audio_files.append(out_file)
         
+    if status_container: status_container.write("🎵 Mixing audio tracks together...")
     combined_file = "podcast_overview.mp3"
     try:
         with open(combined_file, "wb") as outfile:
@@ -462,8 +505,8 @@ html, body, [class*="css"] {
 .main .block-container {
     padding-top: 2rem !important;
     padding-bottom: 5rem !important;
-    padding-left: 2rem !important;
-    padding-right: 2rem !important;
+    padding-left: 1rem !important;
+    padding-right: 1rem !important;
     max-width: 100% !important;
 }
 
@@ -579,7 +622,7 @@ st.markdown(CSS, unsafe_allow_html=True)
 
 
 # --- Main Layout ---
-col1, col2, col3 = st.columns([1, 2.5, 1], gap="large")
+col1, col2, col3 = st.columns([1.2, 2.3, 1.2], gap="medium")
 
 # LEFT PANEL: Sources & History
 with col1:
@@ -588,7 +631,7 @@ with col1:
     with st.container(border=True):
         st.subheader("Add Source")
         uploaded_file = st.file_uploader("Upload PDF", accept_multiple_files=False, label_visibility="collapsed")
-        input_url = st.text_input("Paste URL", placeholder="https:// (Web or YouTube)", label_visibility="collapsed")
+        input_url = st.text_input("Paste URL", placeholder="Paste Web or YT link...", label_visibility="collapsed")
         pasted_text = st.text_area("Paste Text", placeholder="Or paste your text here...", height=100, label_visibility="collapsed")
         
         if st.button("Add to Knowledge Base", type="primary"):
@@ -628,6 +671,7 @@ with col1:
                         "reading_time": reading_time,
                         "raw_text": all_text
                     })
+                    st.session_state.suggested_questions = generate_suggested_questions(st.session_state.text_chunks)
                     save_sources()
                     st.success("Added!")
 
@@ -635,25 +679,50 @@ with col1:
     if not st.session_state.sources:
         st.markdown('<p style="color:#94A3B8; font-size:0.85rem;">No sources added yet. Add a PDF or text to begin.</p>', unsafe_allow_html=True)
     else:
-        for s in st.session_state.sources:
+        for i, s in enumerate(st.session_state.sources):
             page_text = f" • {s['pages']} pages" if s['pages'] > 0 else ""
-            st.markdown(f"""
-            <div class="source-card">
-                <div class="source-title">📄 {s['name']}</div>
-                <div class="source-meta">{s['words']} words{page_text} • ~{s['reading_time']} min read</div>
-            </div>
-            """, unsafe_allow_html=True)
+            
+            c1, c2 = st.columns([4, 1])
+            with c1:
+                st.markdown(f"""
+                <div class="source-card" style="margin-bottom: 0px;">
+                    <div class="source-title">📄 {s['name']}</div>
+                    <div class="source-meta">{s['words']} words{page_text} • ~{s['reading_time']} min read</div>
+                </div>
+                """, unsafe_allow_html=True)
+            with c2:
+                if st.button("🗑️", key=f"del_{i}", help="Remove Source"):
+                    st.session_state.sources.pop(i)
+                    st.session_state.text_chunks = []
+                    st.session_state.faiss_index = None
+                    for source in st.session_state.sources:
+                        chunks = chunk_text(source["raw_text"])
+                        st.session_state.text_chunks.extend(chunks)
+                        st.session_state.faiss_index = create_vector_store(chunks, st.session_state.faiss_index)
+                    save_sources()
+                    st.rerun()
+                    
             with st.expander("Preview Text"):
                 st.markdown(f"<div style='height: 150px; overflow-y: auto; font-size: 0.8rem; color: #94A3B8;'>{s['raw_text']}</div>", unsafe_allow_html=True)
+            st.write("")
             
     st.divider()
     st.markdown("### Conversations")
-    if st.button("💬 New Conversation", use_container_width=True):
-        new_id = str(uuid.uuid4())
-        st.session_state.threads[new_id] = {"name": f"Conversation {len(st.session_state.threads)+1}", "messages": []}
-        st.session_state.active_thread_id = new_id
-        save_threads()
-        st.rerun()
+    colA, colB = st.columns(2)
+    with colA:
+        if st.button("💬 New", use_container_width=True, help="New Conversation"):
+            new_id = str(uuid.uuid4())
+            st.session_state.threads[new_id] = {"name": f"Conversation {len(st.session_state.threads)+1}", "messages": []}
+            st.session_state.active_thread_id = new_id
+            save_threads()
+            st.rerun()
+    with colB:
+        if st.button("🗑️ Clear", use_container_width=True, help="Clear Current Chat"):
+            if st.session_state.active_thread_id in st.session_state.threads:
+                st.session_state.threads[st.session_state.active_thread_id]["messages"] = []
+                st.session_state.threads[st.session_state.active_thread_id]["name"] = "Cleared Chat"
+                save_threads()
+                st.rerun()
         
     for t_id, thread in reversed(list(st.session_state.threads.items())):
         is_active = (t_id == st.session_state.active_thread_id)
@@ -693,6 +762,15 @@ with col2:
                             except Exception:
                                 pass
 
+            if not active_thread["messages"] and st.session_state.get("suggested_questions"):
+                st.markdown('<p style="font-size:0.85rem; color:#94A3B8; margin-bottom: 8px;">✨ Suggested Questions:</p>', unsafe_allow_html=True)
+                for q in st.session_state.suggested_questions:
+                    if st.button(q, use_container_width=True):
+                        active_thread["messages"].append({"role": "user", "content": q})
+                        active_thread["name"] = q[:20] + "..." if len(q) > 20 else q
+                        save_threads()
+                        st.rerun()
+
         if prompt := st.chat_input("Ask about your documents..."):
             active_thread["messages"].append({"role": "user", "content": prompt})
             # Generate a summary name for the thread if it's the first message
@@ -707,13 +785,11 @@ with col2:
                     with st.spinner("Analyzing..."):
                         inc_short = st.session_state.get("inc_short", True)
                         inc_long = st.session_state.get("inc_long", True)
-                        inc_flow = st.session_state.get("inc_flow", True)
-                        
                         raw_answer, usage = query_rag(
                             active_thread["messages"][-1]["content"], 
                             st.session_state.faiss_index, 
                             st.session_state.text_chunks, 
-                            inc_short, inc_long, inc_flow
+                            inc_short, inc_long
                         )
                         
                         mermaid_blocks = re.findall(r'```mermaid\n(.*?)\n```', raw_answer, re.DOTALL)
@@ -726,11 +802,12 @@ with col2:
                             st.caption(f"⚡ Token Usage: **{usage.total_tokens}**")
                         
                         if text_part.strip():
-                            try:
-                                audio_fp = text_to_speech(text_part)
-                                st.audio(audio_fp, format='audio/mp3')
-                            except Exception:
-                                pass
+                            with st.spinner("Generating audio reply..."):
+                                try:
+                                    audio_fp = text_to_speech(text_part)
+                                    st.audio(audio_fp, format='audio/mp3')
+                                except Exception:
+                                    pass
                                 
                     usage_dict = {"prompt_tokens": usage.prompt_tokens, "completion_tokens": usage.completion_tokens, "total_tokens": usage.total_tokens} if usage else None
                     active_thread["messages"].append({
@@ -746,7 +823,7 @@ with col2:
 with col3:
     st.markdown("### 📝 Notebook")
     with st.container(border=True):
-        tab1, tab2, tab3, tab4 = st.tabs(["Notes", "Flashcards", "Mind Maps", "Podcast"])
+        tab1, tab2, tab3, tab4 = st.tabs(["📝 Notes", "📇 Cards", "🧠 Map", "🎙️ Audio"])
         
         with tab1:
             st.markdown('<p style="font-size:0.85rem; color:#94A3B8;">Save key insights here.</p>', unsafe_allow_html=True)
@@ -794,8 +871,7 @@ with col3:
                 
         with tab3:
             st.markdown('<p style="font-size:0.85rem; color:#94A3B8;">Visualize your topics.</p>', unsafe_allow_html=True)
-            st.session_state.inc_flow = st.checkbox("Enable Auto-Mind Maps in Chat", value=st.session_state.get("inc_flow", True))
-            st.caption("When enabled, the AI will automatically generate Mermaid diagrams for complex topics.")
+            st.info("To generate a Mind Map, simply ask the AI to draw a flowchart or diagram for you in the chat!")
             
         with tab4:
             st.markdown('<p style="font-size:0.85rem; color:#94A3B8;">Listen to a conversational overview.</p>', unsafe_allow_html=True)
@@ -803,10 +879,13 @@ with col3:
                 st.info("Upload a document first to generate a podcast.")
             else:
                 if st.button("Generate Audio Overview"):
-                    with st.spinner("Writing script and synthesizing voices..."):
-                        audio_path = generate_podcast_audio(st.session_state.text_chunks)
+                    with st.status("Generating Podcast...", expanded=True) as status:
+                        audio_path = generate_podcast_audio(st.session_state.text_chunks, status)
                         if audio_path and os.path.exists(audio_path):
                             st.session_state.podcast_audio = audio_path
+                            status.update(label="Podcast Ready!", state="complete", expanded=False)
+                        else:
+                            status.update(label="Failed to generate podcast.", state="error")
                 
                 if st.session_state.get("podcast_audio") and os.path.exists(st.session_state.podcast_audio):
                     st.markdown("---")
