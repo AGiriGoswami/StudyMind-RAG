@@ -1,22 +1,25 @@
-# 📚 StudyMind - RAG Based Academic Assistant
+# 🧠 StudyMind - Modern AI Research Workspace
 
-StudyMind is a Retrieval-Augmented Generation (RAG) based academic assistant that allows users to upload PDF documents or paste text to ask questions about their content. It uses Google's Gemini for embeddings, FAISS for efficient similarity search, and Groq's fast Llama 3.1 model to generate accurate answers based on the provided context.
+StudyMind is a premium, Retrieval-Augmented Generation (RAG) based academic workspace designed to help users ingest, analyze, and understand complex information. Built with a sleek, responsive UI similar to NotebookLM and Perplexity AI, it securely persists all of your data and provides powerful tools to interact with your knowledge base.
 
-## 🌟 Key Features
-- **Flexible Ingestion:** Seamlessly extract text from uploaded PDF documents or raw text.
-- **Intelligent Chunking & Embedding:** Text is chunked and embedded using Google's Gemini (`models/gemini-embedding-001`).
-- **Fast Retrieval:** Uses a local FAISS vector database to retrieve the most relevant context for a user's question.
-- **Accurate Answers:** Utilizes Groq's high-speed inference with the Llama 3.1 8B model to generate context-aware answers.
-- **Multi-Modal Output:** Generates not just text, but structured **Mermaid.js Flowcharts** and an auto-generated **Audio Summary** (using Google TTS) for accessibility.
-- **Persistent Chat History:** Seamlessly preserves conversation history in the browser using `streamlit_local_storage`.
+It uses **Google Gemini** for intelligent text embedding, **FAISS** for lightning-fast similarity search, and **Groq (Llama 3.1)** for blazing-fast conversational answers.
+
+## ✨ Key Features
+- **Universal Knowledge Ingestion:** Upload PDF documents, paste raw text, scrape Web URLs, or fetch full transcripts directly from YouTube video links!
+- **State-of-the-Art State Persistence:** Zero data loss on refresh. All chat history, source documents, FAISS embeddings, and user notes are securely saved to disk in a `.workspace/` directory.
+- **Two-Speaker Podcast Generation:** Automatically converts your uploaded documents into a dynamic, two-speaker conversational podcast using Microsoft Edge TTS (`edge-tts`). Watch the real-time progress tracker as the AI writes the script, records the host and guest, and mixes the audio tracks.
+- **AI Suggested Questions:** The moment you upload a document, the AI reads it and generates highly relevant, clickable suggested questions to help you start exploring immediately.
+- **Mermaid.js Flowcharts:** Ask the AI to visualize a process or concept, and it will automatically generate and render a beautiful, downloadable flowchart.
+- **Flashcard Generation:** Instantly turn your knowledge base into an interactive, digital flashcard deck for studying.
+- **Rate-Limit Resiliency:** Built-in exponential backoff and dynamic pacing to gracefully handle Google's Free Tier API limits.
 
 ## 🛠️ Tech Stack
-- **Frontend:** [Streamlit](https://streamlit.io/)
-- **Embeddings:** [Google Gemini API](https://ai.google.dev/) (`google-genai` SDK)
-- **Vector Store:** [FAISS](https://github.com/facebookresearch/faiss) (Facebook AI Similarity Search)
-- **LLM:** [Groq API](https://groq.com/) (running `llama-3.1-8b-instant`)
-- **PDF Parsing:** `pypdf`
-- **Audio:** `gTTS` (Google Text-to-Speech)
+- **Frontend:** [Streamlit](https://streamlit.io/) with custom HTML/CSS for a responsive, premium UI.
+- **Embeddings:** [Google Gemini API](https://ai.google.dev/) (`gemini-embedding-001`)
+- **Vector Store:** [FAISS](https://github.com/facebookresearch/faiss)
+- **LLM:** [Groq API](https://groq.com/) (`llama-3.1-8b-instant`)
+- **Document & Web Parsing:** `pypdf`, `beautifulsoup4`, `youtube-transcript-api`
+- **Audio Generation:** `edge-tts` (Two-Speaker Podcast), `gTTS` (Chat Read-Aloud)
 
 ## 🚀 Setup & Run Locally
 
@@ -54,11 +57,3 @@ GROQ_API_KEY="your_groq_api_key"
 ```bash
 streamlit run app.py
 ```
-
-## 🗺️ Roadmap & Upcoming Features
-
-- **Advanced Document Processing:** Replacing basic word-splitting with semantic chunking (e.g., `RecursiveCharacterTextSplitter`) and adding support for DOCX, CSV, and Web Scraping.
-- **Enhanced Retrieval:** Implementing Hybrid Search (FAISS + BM25 keyword search) and Cross-Encoder Re-ranking to drastically improve retrieval accuracy.
-- **Source Citations:** Showing users exactly which chunks of text were used to answer a question.
-- **Improved TTS:** Upgrading from blocking `gTTS` to asynchronous, natural-sounding audio streams to prevent UI freezing.
-- **Exporting Options:** Letting users download chat logs and flowcharts to Markdown or PDF.
